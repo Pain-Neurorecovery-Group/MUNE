@@ -1,0 +1,256 @@
+---
+title: "Bayesian MUNE - A Novel Approach (Progress)"
+author: "Siebe Everaerts"
+date: "2026-09-24"
+output: html_document
+bibliography: references.bib
+csl: apa.csl
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(tidyverse, ggplot2, poisbinom, patchwork, cmdstanr, here, posterior, bayestestR)
+```
+
+# MUNE
+## Introduction
+Some medical disorders are associated with a progressive loss of motor units. For example, in amyotrophic lateral sclerosis (ALS), motor unit numbers appear to decline according to an exponential decay pattern [@Baumann2012]. Therefore, it is important to estimate the number of motor units reliably and effectively. Several statistical methods have been developed for this purpose. One widely used approach is the method proposed by @Bostock2016, in which an error function is optimized through a refitting procedure that optimizes for some unit specific and general parameters. Another approach is the Bayesian method proposed by @Ridall2006, in which a probabilistic model is constructed based on three underlying assumptions. The model is then fitted separately for a range of plausible values of \(U\), to estimate the posterior probability of \(P(N \mid Y)\). Here we propose a new model of estimating \(U\) (the total number of motor units). We will build from the ground up and add complexity as we go along.
+
+## Model
+### Stochastic process
+It is known that a motor unit fires when a threshold level of voltage change, resulting from ion movements across the cell membrane, is reached. These voltage changes within the cell can be induced by electrical stimulation (mV) and so can the threshold. Since we are working with CMAP recordings we only have access to electrical stimulation to the surface (mV), which is why our thresholds will be located in this space. However, this firing threshold is not fixed and fluctuates over time due to variations in ion channel activity. Researchers have found that this within-unit variability in firing threshold can be modelled well by a Gaussian distribution [@Hales2004]. Thus, for \(N\) observations, with stimulus \(S_i\), where \(i \in \{1,2,\ldots,N\}\), the threshold of motor unit \(u\), where \(u \in \{1,2,\ldots,U\}\), can be modelled as normally distributed:
+$$
+\tau_{i,u} \sim N(\mu_{\tau},\sigma_{\tau})
+$$
+This variation results in a stochastic rather than deterministic firing pattern for individual motor units, as their firing thresholds fluctuate over time. Once the instantaneous threshold is crossed, the motor unit fires. Estimating a separate threshold for every combination of stimulus and motor unit would therefore introduce a very large number of parameters into the model. Fortunately, previous research has shown that motor units respond to varying stimulus intensities according to a unit-specific firing curve that can be characterized by a sigmoidal activation function [@Brown1976; @Slawnych1996]. By marginalizing over the distribution of the within-unit firing threshold, it is possible to account for this stochasticity without estimating a separate threshold for every stimulus–unit combination. This results in a probabilistic response curve describing the probability that motor unit \(u\) fires in response to stimulus \(i\). Because the within-unit thresholds are normally distributed, the probability that motor unit \(u\) fires in response to stimulus \(i\) is:
+$$
+P(\text{fire}_{i,u})=\int_{-\infty}^{S_i}
+\frac{1}{\sigma_{\tau}\sqrt{2\pi}}\exp\left[-\frac{(\tau-\mu_{\tau})^2}{2\sigma_{\tau}^2}\right]d\tau
+$$
+$$
+P(\text{fire}_{i,u})=\Phi\left(\frac{S_s-\mu_{\tau}}{\sigma_{\tau}}\right)
+$$
+For the simple case of \(U=3\), the probabilistic response curves can be plotted as a function of stimulus intensity, assuming a fixed, shared threshold mean and variance. The resulting curves are shown below:
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5}
+N = 100
+S = seq(0, 16, length.out = N)
+U = 3
+k = 1:U
+
+t = 8
+sd = 1.5
+
+df = expand.grid(Unit = k,S=S) %>% mutate(p=pnorm((S-t)/sd))
+
+ggplot(df)+geom_line(aes(x=S, y=p), linewidth = 2, color ="darkgreen")+theme_classic()+facet_wrap(~Unit)+labs(title = "Probabilistic response curve for each unit", x = "Stimulus (mV)", y = "P(fire)")+theme(plot.title = element_text(hjust = 0.5))
+```
+
+### Poisson-binomial
+As shown above, each unit has an accompanying probability of firing at a certain stimulus intensity. This means that the distribution of \(I_{i,u}\) (where \(I_{i,u}\) indicates whether a specific unit \(u\) fires at a specific stimulus \(i\)), is \(I_{i,u} \sim \operatorname{Bernoulli}(P(\mathrm{fire}_{i,u}))\) distributed. Unfortunately, Stan cannot sample latent discrete parameters and therefore sampling \(I_{i,u}\) is impossible. However, we can also express this as \(I_{i,u} \sim \operatorname{Binomial}(1,P(\mathrm{fire}_{i,u}))\), since these two distributions are equivalent. The total number of activated units at a given stimulus \(K_i\) is then Poisson-binomial distributed, as follows:
+
+$$
+K_i \sim PoissonBinomial(\Theta_{i})
+$$
+The Poisson-binomial distribution describes the sum of \(U\) Binomial-distributed variables with potentially different success probabilities. Note that, in our current model, the firing probabilities are still the same across units. However, in later steps, we will allow these probabilities to vary between units, which is why the Poisson-binomial distribution is necessary. \(\Theta_i\) denotes the list of firing probabilities, where each unit has its own probability, meaning that the length of this list is equal to the total number of units \(U\). Thus, for a specific stimulus \(i\), \(\Theta_i\) contains the firing probability of each unit in response to that stimulus.
+
+Using the process described so far, we can consider a sequence of varying stimulus intensities \(S_i\) and a simulated scenario with fixed values for \(U\), \(\mu_{\tau}\), and \(\sigma_{\tau}\). Given these parameters, \(U\) firing probabilities are generated for each stimulus \(S_i\), resulting in a set of probabilities \(P(\mathrm{fire}_{i,u})\) for each unit \(u\). These probabilities determine the latent firing states \(I_{i,u}\), where the sum of these latent firing states,
+
+$$
+K_i = \sum_{u=1}^{U} I_{i,u},
+$$
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5}
+sim_path = here("fits", "fixed_thresh_fixed_sigma_simulation.rds")
+if (file.exists(sim_path)) {
+  
+  sim = readRDS(sim_path)
+  
+  N = sim$N
+  S = sim$S
+  U = sim$U
+  k = sim$k
+  df = sim$df
+  t = sim$t
+  t_sigma=sim$t_sigma
+  outcome = sim$outcome}else{
+    N = 100
+    S = seq(0, 16, length.out = N)
+    U = 6
+    k = 1:U
+    t = rnorm(1, 9, 2)
+    t_sigma = rnorm(1,2,1)
+    
+    
+    df = expand.grid(Unit = k,Stim=S) %>% mutate(p=pnorm((Stim-t)/t_sigma))
+    
+    outcome = df %>% group_by(Stim) %>% summarise(Y = rpoisbinom(1, p))
+    
+    sim = list(N = N,S = S,U = U,k = k, t = t, t_sigma = t_sigma,
+    df = df,outcome = outcome)
+    
+    saveRDS(sim, sim_path)} 
+```
+
+is therefore Poisson-binomial distributed. This process allows us to generate data for a simple case. Imagine a case where there are 6 total motor units, and each unit has a random threshold at every stimulus \(i\), drawn from a normal distribution, \(\tau_{i,u} \sim N(\mu_{\tau},\sigma_{\tau}^2)\). The shared threshold mean \(\mu_{\tau}\) is fixed at `r round(t, 2)`, and the standard deviation \(\sigma_{\tau}\) is fixed at `r round(t_sigma,2)`. In total, we generate 100 different data points, with the stimulus intensity \(S\) ranging from 0 to 16. We then use the process described above to generate the number of active units at each stimulus intensity.
+
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5}
+K = ggplot(outcome)+geom_point(aes(x=Stim, y =Y))+theme_classic()+
+  labs(title="number of recruited motor units", x="stimulus (mV)", y = "K")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+p = ggplot(df)+geom_line(aes(x=Stim, y=p), linewidth = 2, color ="darkgreen")+theme_classic()+labs(title = "Probabilistic response curve", x = "Stimulus (mV)", y = "P(fire)")+theme(plot.title = element_text(hjust = 0.5))
+
+K+p
+```
+
+The left graph above shows the total number of different motor units that are active at each specific stimulus intensity. The right graph shows the probabilistic firing curve for each of the five motor units. Since all units share the same mean and standard deviation of their instantaneous threshold, the probabilistic firing curve is the same for all units. We can now implement a simple Stan model in which the stimulus intensity is provided as the input and the total number of activated motor units at each stimulus intensity is the observed output. This allows us to test whether the Poisson-binomial likelihood correctly describes the generated data and whether the shared threshold mean and standard deviation can be recovered from the model.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+mod = cmdstan_model(here("models","Poisson_binomial_test.stan")) 
+
+fit_path = here("fits", "fixed_thresh_fixed_sigma.rds")
+draws_path = here("fits", "fixed_thresh_fixed_sigma_draws.rds")
+
+data_stan = list(N=N, U=U, Y = outcome$Y, S = outcome$Stim)
+
+if (file.exists(fit_path)) {
+  fit = readRDS(fit_path)
+  draws= readRDS(draws_path)}else{
+    fit = mod$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, chains = 4, parallel_chains = 4)
+    saveRDS(fit, fit_path)
+    draws = fit$draws()
+    saveRDS(draws, draws_path)} 
+
+#extract relevant values
+t_draws = bind_rows(tibble(parameter = "threshold",posterior = as_draws_df(draws, parameter = "t")$t,prior = rnorm(4000, 9, 2),sim = t),
+  tibble(parameter = "sd",posterior = as_draws_df(draws, parameter = "t_sigma")$t_sigma,prior = rnorm(4000, 2, 1),sim = t_sigma))
+
+ggplot(t_draws) + geom_density(aes(x = prior), fill = "green")+geom_density(aes(x=posterior), fill = "red", alpha =0.7)+
+  geom_vline(aes(xintercept = sim), linewidth = 1)+theme_classic()+facet_wrap(~parameter, scales  ="free_x")+labs(x="parameter value", title = "Prior-Posterior update compared to simulated value")+theme(plot.title = element_text(hjust = 0.5))
+  
+```
+The above plot shows the prior distribution in green, the posterior distribution in red, and the simulated value as a black line. We can see that the posterior has shifted from the prior and places substantial density around the simulated value, suggesting that the parameters are recoverable. The values used here were chosen arbitrarily but other values are retrievable too. 
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, warning=FALSE}
+p_draws= as_draws_df(draws, parameter = "pp") %>% select(starts_with("pp[")) %>% 
+  pivot_longer(cols = everything(),names_to = "p",values_to = "posterior") %>% group_by(p) %>% 
+  summarise(mean_p = mean(posterior)) %>% 
+  mutate(Stim = S[as.integer(str_extract(p, "(?<=\\[)\\d+"))],Unit = as.integer(str_extract(p, "(?<=,)\\d+(?=\\])"))) %>% select(!p) %>% 
+  left_join(df, by = c("Unit", "Stim"))
+
+ggplot(p_draws)+geom_line(aes(x=Stim, y = p), linewidth = 2, color = "green")+geom_line(aes(x=Stim, y = mean_p),linewidth = 2, color = "red", alpha = 0.5)+
+  theme_classic()+facet_wrap(~Unit)+
+  labs(title = "Comparison simulated & estimated probabilistic response curves", y = "P(fire)",x="Stimulus (mV)")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+The graph above shows the simulated probabilistic response curves for each unit in green and the corresponding estimated curves in red. All curves are identical because the threshold mean and standard deviation of the instantaneous thresholds are shared across units. Nevertheless, we can see that the probabilistic response curve for each unit can be recovered with very high precision. Therefore, uncertainty around the estimated curves is not shown here.
+
+## Unit-specific threshold means
+
+Obviously, the case discussed above is too simple, as we assumed that the threshold mean was the same for each unit. This meant that, on average, each unit had the same excitability pattern and therefore the same probabilistic firing curve. However, we know from the literature that this is not the case. In addition to instantaneous within-unit variation in threshold, there is also between-unit variation in excitability. Consequently, the overall mean threshold can differ between units, with some units being overall easier to excite than others.
+
+
+We therefore extended the model by allowing the threshold mean \(\mu_{\tau}\) to vary between units, while keeping the within-unit threshold variation \(\sigma_{\tau}\) constant across units. This allows us to introduce between-unit variation in excitability while keeping the model relatively simple as we continue to build it up step by step. This results in the instantaneous threshold being distributed as follows:
+
+$$
+\tau_{i,u} \sim N(\mu_{\tau_u},\sigma_{\tau})
+$$
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, warning=FALSE}
+# Generate data
+sim_path = here("fits", "ran_thresh_fixed_sigma_simulation.rds")
+if (file.exists(sim_path)) {
+  
+  sim = readRDS(sim_path)
+  
+  N = sim$N
+  Stim = sim$Stim
+  U = sim$U
+  t_mu_mu = sim$t_mu_mu
+  t_mu_sigma = sim$t_mu_sigma
+  t_sigma = sim$t_sigma
+  t_mu = sim$t_mu
+  Units = sim$Units
+  outcome = sim$outcome} else{
+    N=100
+    Stim = seq(0, 16, length.out = N)
+    U=6
+    
+    t_mu_mu = 9
+    t_mu_sigma = 2
+    t_sigma = exp(rnorm(1, 0.6,0.2))
+    
+    t_mu = sort(rnorm(U, t_mu_mu, t_mu_sigma))
+    
+    Units =  expand.grid(unit = seq_len(U),Stim = Stim) %>%mutate(t_mu = t_mu[unit]) %>% mutate(pp = pnorm((Stim-t_mu)/t_sigma)) 
+    
+    outcome = Units %>% group_by(Stim) %>% summarise(Y = rpoisbinom(1, pp))
+    
+    sim = list(N = N,Stim = Stim,U = U,t_mu_mu = t_mu_mu,t_mu_sigma = t_mu_sigma,t_sigma = t_sigma,
+    t_mu = t_mu,Units = Units,outcome = outcome)
+    saveRDS(sim, sim_path)}
+
+ggplot(Units)+geom_line(aes(x=Stim, y=pp), linewidth = 2, color ="darkgreen")+theme_classic()+labs(title = "Probabilistic response curve", x = "Stimulus (mV)", y = "P(fire)")+theme(plot.title = element_text(hjust = 0.5))+geom_vline( data = distinct(Units, unit, t_mu),aes(xintercept = t_mu), linewidth =1.5, linetype = "longdash")+facet_wrap(~unit)
+
+
+
+```
+
+The plot above shows simulated data for this scenario. Each unit has a slightly different threshold mean, with the units ordered from the lowest threshold mean (unit 1) to the highest. This ordering results in a distinct probabilistic firing curve for each unit in response to the stimulus.
+
+We can extend our Stan model to incorporate this between-unit variation and assess whether it can still reliably recover the underlying parameters.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+mod = cmdstan_model(here("models","Poisson_binomial_test2.stan")) 
+
+fit_path = here("fits", "ran_thresh_fixed_sigma.rds")
+draws_path = here("fits", "ran_thresh_fixed_sigma_draws.rds")
+
+data_stan = list(N=N, U=U, Y = outcome$Y, S = outcome$Stim)
+
+if (file.exists(fit_path)) {
+  fit = readRDS(fit_path)
+   draws= readRDS(draws_path)}else{
+    fit = mod$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, chains = 4, parallel_chains = 4, adapt_delta = 0.95 )
+    saveRDS(fit, fit_path)
+    draws = fit$draws()
+    saveRDS(draws, draws_path)} 
+
+#extract relevant values
+t_sigma_draws = tibble(posterior = as_draws_df(draws, variable = "t_sigma_log")$t_sigma_log, prior = rnorm(4000,0.6,0.2), sim=log(t_sigma))
+
+ggplot(t_sigma_draws) + geom_density(aes(x = prior), fill = "green")+geom_density(aes(x=posterior), fill = "red", alpha =0.7)+
+  geom_vline(aes(xintercept = sim), linewidth = 1)+theme_classic()+labs(x="parameter value", title = "Prior-Posterior update compared to simulated value")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+prior_mu = 1:U * 2 + 4
+t_draws = bind_rows(lapply(1:U, function(i) {
+  tibble(parameter = paste0("t_mu[", i, "]"),posterior = as_draws_df(draws)[[paste0("t_mu[", i, "]")]],
+         prior = rnorm(4000, prior_mu[i], 3),sim = t_mu[i])}))
+
+ggplot(t_draws) + geom_density(aes(x = prior), fill = "green")+geom_density(aes(x=posterior), fill = "red", alpha =0.7)+
+  geom_vline(aes(xintercept = sim), linewidth = 1)+theme_classic()+facet_wrap(~parameter, scales  ="free_x")+labs(x="parameter value", title = "Prior-Posterior update compared to simulated value")+theme(plot.title = element_text(hjust = 0.5))
+  
+```
+The plot above shows the prior-to-posterior update compared with the simulated values. All parameters remain recoverable, with both the unit-specific threshold means and the shared within-unit variation estimated with reasonable precision. Next, we assess the agreement between the predicted and estimated unit-specific probabilistic firing curves.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+p_draws= as_draws_df(draws, variable = "pp") %>% select(starts_with("pp[")) %>% 
+  pivot_longer(cols = everything(),names_to = "p",values_to = "posterior") %>% group_by(p) %>% 
+  summarise(mean_p = mean(posterior), hdi = list(hdi(posterior, ci = 0.95)),.groups = "drop") %>% 
+  mutate(lower = map_dbl(hdi, ~ .x$CI_low),upper = map_dbl(hdi, ~ .x$CI_high)) %>%select(-hdi)%>% 
+  mutate(Stim = Stim[as.integer(str_extract(p, "(?<=\\[)\\d+"))],unit = as.integer(str_extract(p, "(?<=,)\\d+(?=\\])"))) %>% select(!p) %>% 
+  left_join(Units, by = c("unit", "Stim"))
+
+ggplot(p_draws)+geom_line(aes(x=Stim, y = pp), linewidth = 2, color = "green")+geom_line(aes(x=Stim, y = mean_p),linewidth = 2, color = "red", alpha = 0.5)+
+  theme_classic()+  geom_ribbon(aes(x = Stim, ymin = lower, ymax = upper),fill = "red",alpha = 0.1) +facet_wrap(~unit, scales ="free_x")+
+  labs(title = "Comparison simulated & estimated probabilistic response curves", y = "P(fire)",x="Stimulus (mV)")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+In the plot above, the estimated probabilistic response curves are shown in red, with the corresponding 95% HDIs. Even after incorporating between-unit variation in threshold, the model continues to accurately estimate the individual probabilistic response curves for each unit.
+
+## References
