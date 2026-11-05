@@ -1,0 +1,95 @@
+---
+title: "dynamic_lex"
+author: "Siebe Everaerts"
+date: "2026-11-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+pacman::p_load(cmdstanr, ggplot2, tidyverse, here,posterior,poisbinom )
+```
+
+
+```{r}
+## check log-likelihood over many units
+U = 20
+reps = 5
+
+pp = list()
+for(u in 1:U){
+  pp[[u]] = list()
+  for (i in 1:rep){
+    pp[[u]][[i]] = runif(u)
+  }
+}
+
+mod_lex = cmdstan_model(here("models","Likelihood_test", "poisson_binomial_lex.stan"))
+mod_dyn = cmdstan_model(here("models","likelihood_test", "poisson_binomial_dynamic.stan"))
+
+fits = list()
+
+for (u in 1:U){
+  fits[[u]] = list()
+  for (i in 1:rep){
+    data_stan = list(N = u, theta = pp[[u]][[i]])
+    f_lex = mod_lex$sample(data = data_stan, iter_sampling = 1, chains = 1, fixed_param = T)
+    f_dyn = mod_dyn$sample(data = data_stan, iter_sampling = 1, chains = 1, fixed_param = T)
+    
+    log_lik = log(dpoisbinom(0:u, pp[[u]][[i]]))
+    
+    draws_lex = as_draws_df(f_lex$draws()) %>% select(-contains('.')) %>% pivot_longer(cols = everything()) %>% pull(value)
+    draws_dyn = as_draws_df(f_dyn$draws()) %>% select(-contains('.')) %>% pivot_longer(cols = everything()) %>% pull(value)
+    
+    df = data.frame(sim = log_lik, est_lex = draws_lex, est_dyn = draws_dyn)
+    fits[[u]][[i]] = df
+  }
+}
+```
+
+
+```{r}
+# Check outcome
+df_diff = data.frame(u = numeric(), rep = numeric(), diff_lex = numeric(), diff_dyn = numeric())
+for (u in 1:U){
+  for(i in 1:rep){
+    diff = fits[[u]][[i]] %>% mutate(diff_dyn = sim - est_dyn, diff_lex = sim - est_lex)
+    
+    df_diff = df_diff %>% add_row(u = u, rep = i, diff_lex = mean(diff$diff_lex), diff_dyn = mean(diff$diff_dyn))
+  }
+  
+}
+
+```
+
+
+```{r}
+# Check with 1 unit and fixed t_sigma 
+U = 1
+rep = 50
+N = 200
+
+sim_list = list()
+
+for (i in 1:rep){
+   Stim = seq(0, 20, length.out = N)
+   
+   t_sigma = exp(rnorm(1, 0.8,0.4))
+   t_mu = rnorm(1, 10, 2)
+   
+   pp = pnorm((Stim-t_mu)/t_sigma)
+   
+   df_sim = data.frame(S = Stim, pp = pp, t_mu = t_mu, t_sigma= t_sigma ) %>% group_by(S) %>% mutate(Y = rpoisbinom(1,pp))
+   sim_list[[i]] = df_sim
+}
+
+mod_lex = cmdstan_model(here("models","Likelihood_test", "U1_lex.stan"))
+mod_dyn = cmdstan_model(here("models","Likelihood_test", "U1_dyn.stan"))
+
+for (i in 1:rep){
+  data_stan = list(Resp = sim_list[[i]]$Y, U=U, N=N, Stim = sim_list[[i]]$S)
+  
+  f_lex = mod_lex$sample(data =data_stan, iter_warmup = 500, iter_sampling = 500, chains = 4, parallel_chains = 4)
+  f_dyn = mod_dyn$sample(data =data_stan, iter_warmup = 500, iter_sampling = 500, chains = 4, parallel_chains = 4)
+
+}
+```

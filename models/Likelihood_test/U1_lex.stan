@@ -1,6 +1,4 @@
-// Functions 
-functions{
-  
+functions{   
   real lppoibin( int k, int n, array[] int elements , vector pp ) {
     // Calculates the log probability of one specific combination of MU firing and not firing
     // k is number of successes, 
@@ -83,101 +81,34 @@ functions{
             }
         }
         return log_sum_exp(terms);
-    }
+    }}
+
+data{
+  int<lower = 0>N;
+  int<lower =0>U;
+  vector[N] Stim;
+  array[N] int Resp;
+  real t_sigma;
 }
 
-
-// Data block.
-data {
-  int<lower=0> U;    // Number of motor units
-  int<lower=0> N;    // Number of obs
-  vector[N] CMAP;
-  vector[N] S;
-}
-
-// The parameters accepted by the model.
-parameters {
-  real t_mu_mu;                     // Parameters for the between unit variation in threshold mean
-  real t_mu_sigma_log;
-  
-  real t_sigma_mu_log;              // Parameters for the between unit variation in threshold precision
-  real t_sigma_sigma_log_log;
-  
-  real<lower=0> amp_mu;             // Parameters for the between unit variation in amplitude contribution of CMAP
-  real<lower=0> amp_sigma;
-  
-  real noise_mean;                   // Parameters for the added background noise to the CMAP
-  real<lower=0> noise_sigma;
-  
-  vector[U] t_mu;
-  vector<lower=0>[U] t_sigma_log;
-
-  
+parameters{
+  real t_mu;
 }
 
 transformed parameters{
-  matrix[N,U] p;
-  real<lower=0> t_sigma_sigma_log;
-  vector<lower=0>[U] t_sigma;
+  matrix[N,U] pp;
   
-  t_sigma_sigma_log = exp(t_sigma_sigma_log_log);
-  t_sigma = exp(t_sigma_log);
-  
-   for (s in 1:N) {
-    for (u in 1:U) {
-      p[s, u] = Phi(
-        (S[s] - t_mu[u]) / t_sigma[u]);}}
-        
+    for(s in 1:N){
+    for (k in 1:U){
+      pp[s,k] = Phi((Stim[s]-t_mu)/t_sigma);
+    }}
 }
 
-// The model
-model {
-  // priors
-  t_mu_mu ~ normal(10,1);
-  t_mu_sigma_log ~ normal(0,0.2);
+model{
+  t_mu ~ normal(10,3);
   
-  t_sigma_mu_log ~ normal(-1,0.2);
-  t_sigma_sigma_log_log ~ normal(-1,0.2);
-  
-  amp_mu ~ normal(0.05,0.1);
-  amp_sigma ~ normal(0.15,0.1);
-  
-  noise_mean ~ normal(0.05,0.1);
-  noise_sigma ~ normal(0.05,0.1);
-  
-  t_mu ~ normal(t_mu_mu, exp(t_mu_sigma_log));
-  t_sigma_log ~ normal(t_sigma_mu_log, t_sigma_sigma_log);
-
-  
-  
-for (s in 1:N) {
     
-    // Stores:
-    //
-    // log_lik[1] = log P(CMAP | K=0)
-    // log_lik[2] = log P(CMAP | K=1)
-    // ...
-    // log_lik[U+1] = log P(CMAP | K=U)
-    
-    vector[U+1] log_lik;
-    // Consider every possible number of recruited units
-    
-    for (k in 0:U) {
-      // P(K = k | S)
-      real log_p_k;
-      log_p_k =poissonbinomial_lpmf(k|U, to_vector(p[s,]));
-      
-      // P(CMAP | K = k)
-      real log_cmap_k;
-      log_cmap_k = normal_lpdf(CMAP[s] |noise_mean + k * amp_mu,sqrt(square(noise_sigma)+ k * square(amp_sigma)));
-      
-      
-      // P(K=k) * P(CMAP | K=k)
-      log_lik[k+1] =log_p_k + log_cmap_k;}   // Add them because log space
-      
-      
-
-    // Sum over all possible K
-    target += log_sum_exp(log_lik);
-  }}
-
+  for (i in 1:N){
+  target += poissonbinomial_lpmf(Resp[i]|U, to_vector(pp[i, ]));}
+  
+}
