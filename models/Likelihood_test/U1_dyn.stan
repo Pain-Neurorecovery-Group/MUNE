@@ -1,5 +1,4 @@
 functions{
-  
   /**
    * Return the Poisson-binomial log probability mass for the specified
    * count y and vector of probabilities theta.  The result is the log
@@ -16,8 +15,7 @@ functions{
   real poisson_binomial_lpmf(int y, vector theta) {
     int N = rows(theta);                              //Determine the number of attempts
     matrix[N + 1, N + 1] alpha;                       //initiate the matrix
-    vector[N] log_theta = log(theta);                 //take the log of success probabilities
-    vector[N] log1m_theta = log1m(theta);              //Take the log of failure probabilities
+
 
     if (y < 0 || y > N)
       reject("poisson binomial variate y out of range, y = ", y,   // Number of successes has to be between 0-N
@@ -29,9 +27,30 @@ functions{
 
     if (N == 0)
       return y == 0 ? 0 : negative_infinity();      // the prob of observing a failure if N = 0 is 1 so check if N = 0
+      
+    //first consider the special cases if y=0 or y=N
+    if (y == 0) {
+      real lp = 0;
+      for (i in 1:N) {
+        lp += log1m(theta[i]);
+      }
+      return lp;
+    }
+    
+    if (y == N) {
+      real lp = 0;
+      for (i in 1:N) {
+        lp += log(theta[i]);
+      }
+      return lp;
+    }
 
     // dynamic programming with cells
+    vector[N] log_theta = log(theta);                 //take the log of success probabilities
+    vector[N] log1m_theta = log1m(theta);              //Take the log of failure probabilities
     // alpha[n + 1, tot + 1] = log prob of tot successes in first n trials
+    alpha = rep_matrix(negative_infinity(), N + 1, N + 1);
+    
     alpha[1, 1] = 0;      // before considering any attempts, the prob of observing a failure = 1 -> log() = 0 
     for (n in 1:N) {      // Loop through units
       // tot = 0
@@ -55,15 +74,18 @@ data{
   int<lower =0>U;
   vector[N] Stim;
   array[N] int Resp;
-  real t_sigma;
 }
 
 parameters{
   real t_mu;
+  real t_sigma_log;
 }
 
 transformed parameters{
   matrix[N,U] pp;
+  real t_sigma;
+  
+  t_sigma = exp(t_sigma_log);
   
     for(s in 1:N){
     for (k in 1:U){
@@ -73,6 +95,7 @@ transformed parameters{
 
 model{
   t_mu ~ normal(10,3);
+  t_sigma_log ~ normal(0.8,0.4);
   
     
   for (i in 1:N){

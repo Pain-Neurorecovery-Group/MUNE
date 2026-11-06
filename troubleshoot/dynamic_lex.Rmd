@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-pacman::p_load(cmdstanr, ggplot2, tidyverse, here,posterior,poisbinom )
+pacman::p_load(cmdstanr, ggplot2, tidyverse, here,posterior,poisbinom, bayesplot, patchwork, future, furrr )
 ```
 
 
@@ -85,11 +85,248 @@ for (i in 1:rep){
 mod_lex = cmdstan_model(here("models","Likelihood_test", "U1_lex.stan"))
 mod_dyn = cmdstan_model(here("models","Likelihood_test", "U1_dyn.stan"))
 
-for (i in 1:rep){
-  data_stan = list(Resp = sim_list[[i]]$Y, U=U, N=N, Stim = sim_list[[i]]$S)
-  
-  f_lex = mod_lex$sample(data =data_stan, iter_warmup = 500, iter_sampling = 500, chains = 4, parallel_chains = 4)
-  f_dyn = mod_dyn$sample(data =data_stan, iter_warmup = 500, iter_sampling = 500, chains = 4, parallel_chains = 4)
+fits = list()
 
+for (i in 1:rep){
+  fits[[i]] = list()
+  data_stan = list(
+    Resp = sim_list[[i]]$Y, 
+    U = U, 
+    N = N, 
+    Stim = sim_list[[i]]$S, 
+    t_sigma = unique(sim_list[[i]]$t_sigma)
+  )
+  
+  tryCatch({
+    print("lexicographic")
+    f_lex = mod_lex$sample(data = data_stan, iter_warmup = 500, iter_sampling = 500, 
+                           chains = 4, parallel_chains = 4, init = 10, 
+                           show_messages = FALSE, refresh = 0)
+    
+    print("dynamic")
+    f_dyn = mod_dyn$sample(data = data_stan, iter_warmup = 500, iter_sampling = 500, 
+                           chains = 4, parallel_chains = 4, init = 10, 
+                           show_messages = FALSE, refresh = 0)
+    
+    # Extraction lives inside the tryCatch block so it only runs if sampling succeeds
+    fits[[i]][["sum_dyn"]]   = f_dyn$summary()
+    fits[[i]][["sum_lex"]]   = f_lex$summary()
+    fits[[i]][["dia_dyn"]]   = f_dyn$sampler_diagnostics(format = "draws_df")
+    fits[[i]][["dia_lex"]]   = f_lex$sampler_diagnostics(format = "draws_df")
+    fits[[i]][['draws_dyn']] = f_dyn$draws(format = "draws_df")
+    fits[[i]][['draws_lex']] = f_lex$draws(format = "draws_df")
+    
+  }, error = function(e) {
+    message("Caught an error, moving on: ", e$message)
+  })
 }
+
+## Verdict attempt 1: cannot start sampling if t_sigma is too low
+```
+
+
+```{r}
+# Check cut-off for t_sigma 
+U = 1
+rep = 50
+N = 200
+t_sigma_seq = seq(from = 0.5,to = 2.5, length.out =rep)
+
+sim_list = list()
+
+for (i in 1:rep){
+   Stim = seq(0, 20, length.out = N)
+   
+   t_sigma = t_sigma_seq[i]#change to a space from 0.5 to 2.5
+   t_mu = rnorm(1, 10, 2)
+   
+   pp = pnorm((Stim-t_mu)/t_sigma)
+   
+   df_sim = data.frame(S = Stim, pp = pp, t_mu = t_mu, t_sigma= t_sigma ) %>% group_by(S) %>% mutate(Y = rpoisbinom(1,pp))
+   sim_list[[i]] = df_sim
+}
+
+mod_dyn = cmdstan_model(here("models","Likelihood_test", "U1_dyn.stan"))
+
+fits = list()
+
+for (i in 1:rep){
+  fits[[i]] = list()
+  data_stan = list(
+    Resp = sim_list[[i]]$Y, 
+    U = U, 
+    N = N, 
+    Stim = sim_list[[i]]$S, 
+    t_sigma = unique(sim_list[[i]]$t_sigma)
+  )
+  
+  tryCatch({
+    f_dyn = mod_dyn$sample(data = data_stan, iter_warmup = 500, iter_sampling = 500, 
+                           chains = 4, parallel_chains = 4, init = 10, 
+                           show_messages = FALSE, refresh = 0)
+    
+    # Extraction lives inside the tryCatch block so it only runs if sampling succeeds
+    fits[[i]][["sum"]]   = f_dyn$summary()
+    fits[[i]][["dia"]]   = f_dyn$sampler_diagnostics(format = "draws_df")
+    fits[[i]][['draws']] = f_dyn$draws(format = "draws_df")
+    
+  }, error = function(e) {
+    message("Caught an error, moving on: ", e$message)
+  })
+}
+
+```
+
+```{r}
+# Implement t_sigma and compare (U = 1)
+U = 1
+rep = 50
+N = 200
+
+sim_list = list()
+
+for (i in 1:rep){
+   Stim = seq(0, 20, length.out = N)
+   
+   t_sigma = exp(rnorm(1, 0.8,0.4))
+   t_mu = rnorm(1, 10, 2)
+   
+   pp = pnorm((Stim-t_mu)/t_sigma)
+   
+   df_sim = data.frame(S = Stim, pp = pp, t_mu = t_mu, t_sigma= t_sigma ) %>% group_by(S) %>% mutate(Y = rpoisbinom(1,pp))
+   sim_list[[i]] = df_sim
+}
+
+mod_lex = cmdstan_model(here("models","Likelihood_test", "U1_lex.stan"))
+mod_dyn = cmdstan_model(here("models","Likelihood_test", "U1_dyn.stan"))
+
+fits = list()
+
+for (i in 1:rep){
+  fits[[i]] = list()
+  data_stan = list(
+    Resp = sim_list[[i]]$Y, 
+    U = U, 
+    N = N, 
+    Stim = sim_list[[i]]$S, 
+    t_sigma = unique(sim_list[[i]]$t_sigma)
+  )
+  
+  tryCatch({
+    print("lexicographic")
+    f_lex = mod_lex$sample(data = data_stan, iter_warmup = 500, iter_sampling = 500, 
+                           chains = 4, parallel_chains = 4)
+    
+    print("dynamic")
+    f_dyn = mod_dyn$sample(data = data_stan, iter_warmup = 500, iter_sampling = 500, 
+                           chains = 4, parallel_chains = 4)
+    
+    # Extraction lives inside the tryCatch block so it only runs if sampling succeeds
+    fits[[i]][["sum_dyn"]]   = f_dyn$summary()
+    fits[[i]][["sum_lex"]]   = f_lex$summary()
+    fits[[i]][["dia_dyn"]]   = f_dyn$sampler_diagnostics(format = "draws_df")
+    fits[[i]][["dia_lex"]]   = f_lex$sampler_diagnostics(format = "draws_df")
+    fits[[i]][['draws_dyn']] = f_dyn$draws(format = "draws_df")
+    fits[[i]][['draws_lex']] = f_lex$draws(format = "draws_df")
+    
+  }, error = function(e) {
+    message("Caught an error, moving on: ", e$message)
+  })
+}
+
+
+
+```
+
+```{r}
+# Investigate both approaches
+sim_df = bind_rows(sim_list, .id = "rep") %>% ungroup() %>% select(t_mu, t_sigma, rep) %>% distinct() %>% pivot_longer(cols=c(t_mu, t_sigma), names_to= "parameter", values_to = "value" )
+
+sum_lex = map_dfr(fits, ~ .x[["sum_lex"]], .id = "rep") %>% filter(variable %in% c("t_mu", "t_sigma")) %>% 
+  left_join(sim_df, by = c("rep"="rep", 'variable' ="parameter"))
+
+sum_dyn = map_dfr(fits, ~ .x[["sum_dyn"]], .id = "rep") %>% filter(variable %in% c("t_mu", "t_sigma")) %>% 
+  left_join(sim_df, by = c("rep"="rep", 'variable' ="parameter"))
+
+dyn_tmu = ggplot(sum_dyn %>% filter(variable == "t_mu")) + geom_point(aes(x = value, y = mean))+
+  geom_errorbar(aes(x=value,ymin=q5, ymax = q95))+
+  theme_classic()+labs(title = "dynamic")+geom_abline(intercept = 0, slope = 1)
+
+lex_tmu = ggplot(sum_lex %>% filter(variable == "t_mu")) + geom_point(aes(x = value, y = mean))+
+  geom_errorbar(aes(x=value,ymin=q5, ymax = q95))+geom_abline(intercept = 0, slope = 1)+
+  theme_classic()+labs(title = "lexicographic")
+
+dyn_tmu/lex_tmu
+
+dyn_tsigma = ggplot(sum_dyn %>% filter(variable == "t_sigma")) + geom_point(aes(x = value, y = mean))+
+  geom_errorbar(aes(x=value,ymin=q5, ymax = q95))+
+  theme_classic()+labs(title = "dynamic")+geom_abline(intercept = 0, slope = 1)
+
+lex_tsigma = ggplot(sum_lex %>% filter(variable == "t_sigma")) + geom_point(aes(x = value, y = mean))+
+  geom_errorbar(aes(x=value,ymin=q5, ymax = q95))+geom_abline(intercept = 0, slope = 1)+
+  theme_classic()+labs(title = "lexicographic")
+
+dyn_tsigma|lex_tsigma
+
+
+```
+
+```{r}
+#test with multiple units and shared sigma 
+
+mod_lex = cmdstan_model(here("models","Likelihood_test", "MU_lex.stan"))
+mod_dyn = cmdstan_model(here("models","Likelihood_test", "MU_dyn.stan"))
+
+fit_model = function(N){
+  U = sample(1:10, 1)
+  
+  Stim = seq(0, 20, length.out = N)
+  
+  t_mu_mu = 10
+  t_mu_sigma = exp(rnorm(1, 0.5,0.3))
+
+  t_sigma = exp(rnorm(1, 0.8,0.4))
+  
+  t_mu = sort(rnorm(U, t_mu_mu, t_mu_sigma))
+  
+  Units =  expand.grid(unit = seq_len(U),Stim = Stim) %>%mutate(t_mu = t_mu[unit]) %>% mutate(pp = pnorm((Stim-t_mu)/t_sigma)) %>% 
+    mutate(t_sigma = t_sigma, t_mu_mu = t_mu_mu, t_mu_sigma = t_mu_sigma, U = U) 
+  
+  outcome = Units %>% group_by(Stim) %>% summarise(Y = rpoisbinom(1, pp))
+  
+  data_stan = list(Y = outcome$Y,  U = U,  N = N, S = Stim)
+  
+  print("lexicographic")
+  f_lex = mod_lex$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, 
+                           chains = 4, parallel_chains = 4, adapt_delta = 0.99)
+  
+  print("dynamic")
+    f_dyn = mod_dyn$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, 
+                           chains = 4, parallel_chains = 4, adapt_delta = 0.99)
+  
+  sum_dyn = f_dyn$summary()
+  sum_lex = f_lex$summary()
+  dia_dyn = f_dyn$sampler_diagnostics(format = "draws_df") %>% select(divergent__, treedepth__)
+  dia_lex = f_lex$sampler_diagnostics(format = "draws_df") %>% select(divergent__, treedepth__)
+  draws_dyn = f_dyn$draws(format = "draws_df") %>% select(-contains("pp")) %>% select(-contains("."))
+  draws_lex = f_lex$draws(format = "draws_df") %>% select(-contains("pp")) %>% select(-contains("."))
+  time_lex = f_lex$time()$total
+  time_dyn = f_dyn$time()$total
+  
+  return(list(sim_out = outcome, sim_units = Units,sum_dyn   = sum_dyn,sum_lex   = sum_lex, dia_dyn   = dia_dyn, dia_lex   = dia_lex,
+    draws_dyn = draws_dyn,draws_lex = draws_lex, time_lex  = time_lex, time_dyn  = time_dyn ))
+  
+  
+}
+
+plan(multisession, workers = 1)
+
+runs = expand.grid(rep = 1:12)
+
+safe_fit <- purrr::possibly(fit_model,otherwise = NULL)
+
+qq <- future_map(1:nrow(runs),~safe_fit(N=200),.options = furrr_options(seed = TRUE),.progress = TRUE)
+
+#saveRDS(qq, file = here("fits", "fits_lex_dyn.rds"))
+
 ```

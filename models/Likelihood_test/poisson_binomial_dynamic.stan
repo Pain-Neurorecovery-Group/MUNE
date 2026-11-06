@@ -29,9 +29,28 @@ functions{
 
     if (N == 0)
       return y == 0 ? 0 : negative_infinity();      // the prob of observing a failure if N = 0 is 1 so check if N = 0
+      
+    //first consider the special cases if y=0 or y=N
+    if (y == 0) {
+      real lp = 0;
+      for (i in 1:N) {
+        lp += log1m(theta[i]);
+      }
+      return lp;
+    }
+    
+    if (y == N) {
+      real lp = 0;
+      for (i in 1:N) {
+        lp += log(theta[i]);
+      }
+      return lp;
+    }
 
     // dynamic programming with cells
     // alpha[n + 1, tot + 1] = log prob of tot successes in first n trials
+    alpha = rep_matrix(negative_infinity(), N + 1, N + 1);
+    
     alpha[1, 1] = 0;      // before considering any attempts, the prob of observing a failure = 1 -> log() = 0 
     for (n in 1:N) {      // Loop through units
       // tot = 0
@@ -49,6 +68,7 @@ functions{
     }
     return alpha[N + 1, y + 1];
   }}
+  
 
 data {
   int<lower=1> N;

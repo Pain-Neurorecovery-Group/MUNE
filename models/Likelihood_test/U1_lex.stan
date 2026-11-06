@@ -88,15 +88,18 @@ data{
   int<lower =0>U;
   vector[N] Stim;
   array[N] int Resp;
-  real t_sigma;
 }
 
 parameters{
   real t_mu;
+  real t_sigma_log;
 }
 
 transformed parameters{
   matrix[N,U] pp;
+  real t_sigma;
+  
+  t_sigma = exp(t_sigma_log);
   
     for(s in 1:N){
     for (k in 1:U){
@@ -106,6 +109,7 @@ transformed parameters{
 
 model{
   t_mu ~ normal(10,3);
+  t_sigma_log ~ normal(0.8,0.4);
   
     
   for (i in 1:N){
