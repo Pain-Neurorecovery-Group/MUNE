@@ -330,3 +330,65 @@ qq <- future_map(1:nrow(runs),~safe_fit(N=200),.options = furrr_options(seed = T
 #saveRDS(qq, file = here("fits", "fits_lex_dyn.rds"))
 
 ```
+
+```{r}
+# Inspect and compare 
+fits =  readRDS(here("fits", "fits_lex_dyn.rds"))
+
+sim_df =  map_dfr(fits, ~.x$sim_units, .id = "run") %>% select(U, run) %>% group_by(run) %>% distinct(U) %>% ungroup()
+
+# plot dist of U
+ggplot(sim_df)+geom_histogram(aes(x=as.factor(U)), stat= 'count', col = "black", linewidth = 1)+theme_classic()+labs(x="Number of Units", y = "number of simulations", title = "Distribution of Motor Units in Simulated Datasets")+
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14))
+
+# Compare divergences
+dia_lex = map_dfr(fits, ~.x$dia_lex, .id = "run") %>% group_by(run) %>% summarise(div = sum(divergent__), max_t = ifelse(any(treedepth__>=10), 1,0)) %>% 
+  left_join(sim_df,by = "run") %>% group_by(U) %>% mutate(d = ifelse(div == 0, 0,1)) 
+
+dia_dyn = map_dfr(fits, ~.x$dia_dyn, .id = "run") %>% group_by(run) %>% summarise(div = sum(divergent__), max_t = ifelse(any(treedepth__>=10), 1,0)) %>% 
+  left_join(sim_df,by = "run") %>% mutate(d = ifelse(div == 0, 0,1)) 
+
+plot_lex = ggplot(dia_lex)+geom_histogram(aes(x=as.factor(U), y = d), stat = "summary", fun = 'mean', col = "black", linewidth = 1.2)+theme_classic()+labs(x="Number of Units", y = "proportion of divergent runs", title = "prop. of divergent runs for the old/slow approach (lexicographic)")+scale_y_continuous(limits = c(0,1))+theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14))
+
+plot_dyn = ggplot(dia_dyn)+geom_histogram(aes(x=as.factor(U), y = d), stat = "summary", fun = 'mean', col = "black", linewidth = 1.2)+theme_classic()+labs(x="Number of Units", y = "proportion of divergent runs", title = "prop. of divergent runs for the new/fast approach (dynamic)")+scale_y_continuous(limits = c(0,1))+theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14))
+
+plot_lex/plot_dyn
+
+dia_comb = dia_lex %>% rename(div_lex = div, d_lex = d) %>% left_join(
+    dia_dyn %>% select(run, div, d) %>% rename(div_dyn = div, d_dyn = d),
+    by = "run") %>% mutate(div_diff = div_dyn - div_lex) %>% group_by(U) %>% mutate(within_rep = row_number()) %>% 
+  ungroup()
+
+ggplot(dia_comb)+geom_bar(aes(x=as.factor(within_rep), y = div_diff), stat = "identity", col = "black", fill = "lightblue")+facet_wrap(~U, scale = "free")+geom_hline(yintercept = 0, linetype = "dotted")+theme_classic()+labs(y="difference in absolute divergences", x = "repetition", title = "Comparison of divergences between 2 approaches")+theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14))
+
+
+# Compare running time
+time_lex = map_dbl(fits, ~.x$time_lex) %>% enframe(name = "run", value = "time_lex") %>% mutate(run = as.character(run))%>% left_join(sim_df,by = "run") %>% mutate(app =  "lex") %>% left_join(dia_lex %>% select(d, max_t,run, U), by = c("run", "U"))
+
+time_dyn = map_dbl(fits, ~.x$time_dyn) %>% enframe(name = "run", value = "time_lex") %>% mutate(run = as.character(run))%>% left_join(sim_df,by = "run")%>% mutate(app =  "dyn") %>% left_join(dia_dyn %>% select(d,max_t, run, U), by = c("run", "U"))
+
+time_df = bind_rows(time_lex,time_dyn) %>% mutate(point_group = if_else(max_t == 1, paste0(app, "_max"), app))
+
+ ggplot(time_df)+geom_point(aes(x=as.factor(U), y = time_lex, col = as.factor(app)), alpha = 0.7)+facet_wrap(~d, scales= 'free_y')+stat_summary(fun = mean, geom = "line", aes(x= as.factor(U), y = time_lex, group = app, col = as.factor(app)), linewidth = 1)+theme_classic()+labs(x='number of units', y = 'running time', title = "running time with increasing # units stratified by wheter the run was divergent", color = "approach")
+ 
+ggplot(time_df)+geom_point(data = time_df %>% filter(max_t==0), aes(x=as.factor(U), y = time_lex, col = as.factor(app)), alpha = 0.7)+stat_summary(fun = mean, geom = "line", aes(x= as.factor(U), y = time_lex, group = app, col = as.factor(app)), linewidth = 1)+
+  geom_point(data = subset(time_df, max_t == 1),aes(x=as.factor(U), y = time_lex, col = point_group))+
+  theme_classic()+labs(x='number of units', y = 'running time', title = "running time with increasing # units stratified by wheter the run hit max treedepth", color = "approach")+scale_color_manual(
+    values = c("lex"     = "#00BFC4","dyn"     = "salmon","lex_max" = "darkblue","dyn_max" = "darkred"),
+    labels = c("lex"     = "Lexicographic","dyn"     = "Dynamic","lex_max" = "Lexicographic (Max Treedepth)","dyn_max" = "Dynamic (Max Treedepth)"))
+
+# compare parameter recovery
+sim = map_dfr(fits, ~.x$sim_units, .id = "run") %>% select(t_sigma, t_mu, unit, run, U) %>% group_by(run) %>% distinct %>% ungroup() %>% pivot_wider(names_from = unit,values_from = t_mu,names_glue = "t_mu[{unit}]") %>% pivot_longer(cols = c(t_sigma, starts_with("t_mu")), names_to = "variable",values_to = "value") %>% select(run, U, variable, value) %>% filter(!is.na(value)) %>% rename("sim" = "value")
+
+param_lex = map_dfr(fits, ~.x$sum_lex, .id = "run") %>% filter(str_detect(variable, "t_mu\\[")|variable =="t_sigma") %>% left_join(sim, by = c("run", 'variable')) %>% left_join(dia_lex %>% select(d,run,U), by = c("run", "U")) %>% mutate(app = 'lex')
+
+param_dyn = map_dfr(fits, ~.x$sum_dyn, .id = "run") %>% filter(str_detect(variable, "t_mu\\[")|variable =="t_sigma") %>% left_join(sim_lex, by = c("run", 'variable')) %>% left_join(dia_dyn %>% select(d,run,U), by = c("run", "U")) %>% mutate(app = 'dyn')
+
+params = bind_rows(param_lex, param_dyn) 
+
+ggplot(params)+geom_point(aes(x=sim, y = mean, col = as.factor(d)))+geom_errorbar(aes(x=sim, ymin = q5, ymax = q95, col = as.factor(d))) + facet_wrap(~ variable+app, scales = "free")+geom_abline(intercept = 0, slope = 1, linetype = "dashed")+theme_light()
+
+```
+
+
+

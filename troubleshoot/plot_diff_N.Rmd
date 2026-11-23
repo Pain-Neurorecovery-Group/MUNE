@@ -1,0 +1,108 @@
+---
+title: "plot_diff_N"
+output: html_document
+---
+```{r}
+pacman::p_load(tidyverse, ggplot2, here)
+
+# Load in data 
+file_name = "N50_t_sigma.rds"
+fits = readRDS(here("fits", file_name))
+
+# extract simulated data
+sim = map_dfr(fits, ~.x$sim_units, .id = "run") %>% mutate(run = as.numeric(run))
+
+# extract diagnostics
+dia = map_dfr(fits, ~.x$dia, .id = "run") %>% mutate(run = as.numeric(run)) %>% group_by(run) %>% summarise(sum_div = sum(divergent__), div = ifelse(sum(divergent__)>0,1,0), max_t = ifelse(any(treedepth__>=10), 1,0))
+```
+
+```{r}
+######################
+## Plot divergences ##
+######################
+
+# Extract Number of Units
+sim_N = sim %>% select(run, U) %>% group_by(run) %>% distinct() %>% ungroup() 
+
+# Summarise divergences by U
+dia_div = dia %>% left_join(sim_N, by = "run") %>% group_by(U) %>% summarise(mean_div = mean(div))
+print(dia_div)
+
+# plot
+plot = ggplot(dia_div)+
+  geom_bar(aes(x=as.factor(U), y = mean_div), stat = 'identity', col = 'black', linewidth = 1.2, fill = "lightgreen")+
+  labs(x="number of units", y = "prop. divergent runs", title = "proportion of divergent runs over # units")+
+  theme_classic()+ theme(plot.title = element_text(hjust = 0.5))
+
+print(plot)
+```
+
+```{r}
+###############
+## Plot time ##
+###############
+color_by = "treedepth"
+
+# Extract Number of Units
+sim_N = sim %>% select(run, U) %>% group_by(run) %>% distinct() %>% ungroup() 
+
+# Extract time
+time = map_dbl(fits, ~.x$time) %>% enframe(name = "run", value = "time") %>% mutate(run = as.numeric(run)) %>%  
+  left_join(sim_N, by = "run") %>% left_join(dia, by = "run")
+
+# plot time over N
+if (color_by == 'treedepth'){
+  
+  plot = ggplot(time)+geom_point(aes(x=as.factor(U), y=time, col = as.factor(max_t)))+
+    stat_summary(aes(x=as.factor(U), y = time, group =1), geom = 'line', fun = 'mean', col = 'salmon', linewidth =1.2)+
+    theme_light()+labs(x="number of units",y="run time", title = "running time over different # of units")+
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  } else if (color_by == 'div'){
+  
+      plot = ggplot(time)+geom_point(aes(x=as.factor(U), y=time, col = as.factor(div)))+
+        stat_summary(aes(x=as.factor(U), y = time, group =1), geom = 'line', fun = 'mean', col = 'salmon', linewidth =1.2)+
+        theme_light()+labs(x="number of units",y="run time", title = "running time over different # of units")+
+        theme(plot.title = element_text(hjust = 0.5))
+  }
+
+print(plot)
+```
+
+
+```{r}
+#############################
+## Plot parameter recovery ##
+#############################
+
+# Extract simulated parameters in a long format
+sim_param = map_dfr(fits, ~.x$sim_units, .id = "run") %>% select(t_sigma, t_mu, unit, run, U, t_mu_mu, t_mu_sigma,t_sigma_sigma, t_sigma_mu_log) %>% mutate(run = as.numeric(run)) %>% group_by(run) %>%  distinct() %>% ungroup() %>% pivot_wider(names_from = unit,values_from = c(t_mu, t_sigma),names_glue = "{.value}[{unit}]") %>% pivot_longer(cols = c(starts_with("t_sigma"), starts_with("t_mu")), names_to = "variable",values_to = "value") %>% rename("sim" = "value") 
+
+# Extract summary 
+summary = map_dfr(fits, ~.x$sum, .id = 'run') %>% mutate(run = as.numeric(run)) %>% filter(str_detect(variable, "t_mu\\[") | variable == "t_sigma"|variable =="t_mu_mu"|variable =="t_mu_sigma"| str_detect(variable, "t_sigma\\[")|variable =="t_sigma_mu_log"|variable =="t_sigma_sigma") %>% left_join(sim_param, by = c("run", "variable")) %>% left_join(dia, by = c("run"))
+
+# plot all together
+plot = ggplot(summary %>% filter(div ==0))+geom_point(aes(x=sim, y = mean, col = as.factor(div)))+
+  geom_errorbar(aes(x=sim, ymin = q5, ymax = q95, col = as.factor(div)))+geom_abline(intercept = 0, slope =1, linetype = "dashed")+
+  theme_classic()+facet_wrap(~variable, scales = 'free')
+```
+
+```{r}
+
+###############
+## pairsplot ##
+###############
+
+#params for the pairsplot
+
+vars = c("t_mu_mu", "t_mu_sigma_log", "t_sigma_mu_log", "t_sigma_sigma_log", "t_mu[1]", "t_mu[2]", "t_sigma_log[1]", "t_sigma_log[2]")
+run = 5
+
+np = as_tibble(fits[[run]][["dia"]]) %>% pivot_longer(cols = -c(.chain, .iteration, .draw), 
+    names_to = "Parameter",values_to = "Value") %>%rename(Chain = .chain, Iteration = .iteration) %>% 
+  select(Parameter, Iteration, Chain, Value) %>% mutate(Parameter= factor(Parameter))
+
+
+mcmc_pairs(fits[[run]][['draws']], pars = vars, np = np)
+```
+

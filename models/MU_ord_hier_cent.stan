@@ -12,7 +12,7 @@ functions{
    * @return Poisson-binomial log probability mass
    */
    
-  real poisson_binomial_lpmf(int y, vector theta) {
+  real poi_binomial_lpmf(int y, vector theta) {
     int N = rows(theta);                              //Determine the number of attempts
     matrix[N + 1, N + 1] alpha;                       //initiate the matrix
 
@@ -78,23 +78,21 @@ data {
 
 
 parameters {
-  real<lower = 0> t_mu0;
-  vector[U-1] delta_raw;
-  real t_sigma_raw;
+  ordered[U] t_mu;
+  real t_sigma_log;
+  real t_mu_mu;
+  real t_mu_sigma_log;
 }
 
 transformed parameters{
-  vector[U] t_mu;
-  vector[U-1] delta;
   matrix[N,U] pp;
   real t_sigma;
+  real t_mu_sigma;
   
-  t_mu[1] = t_mu0;
-  for (k in 2:U){
-    delta[k-1] = exp(delta_raw[k-1]);
-    t_mu[k] = t_mu[k-1] + delta[k-1];}
+  t_mu_sigma = exp(t_mu_sigma_log);
   
-  t_sigma = exp(0.6+0.3*t_sigma_raw);
+  
+  t_sigma = exp(t_sigma_log);
   
   for (k in 1:U){
   for(s in 1:N){
@@ -102,13 +100,15 @@ transformed parameters{
     }}
 }
 model {
-  for(k in 2:U){
-    delta_raw ~ normal(-0.4,1);
+  t_sigma_log ~ normal(0.5,1);
+  
+  t_mu_mu ~ normal(10,2);
+  t_mu_sigma_log ~ normal(0.5,0.3);
+  
+  for (k in 1:U){
+    t_mu[k] ~ normal(t_mu_mu, t_mu_sigma);
   }
-  t_sigma_raw ~ std_normal();
-  t_mu0 ~ normal(5,3);
   
   for (i in 1:N){
-  target += poisson_binomial_lpmf(Y[i]| to_vector(pp[i,]));}
+  target += poi_binomial_lpmf(Y[i]| to_vector(pp[i,]));}
 }
-

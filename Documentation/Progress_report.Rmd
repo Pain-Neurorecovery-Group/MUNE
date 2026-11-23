@@ -5,12 +5,13 @@ date: "2026-09-24"
 output: html_document
 bibliography: references.bib
 csl: apa.csl
+runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-pacman::p_load(tidyverse, ggplot2, poisbinom, patchwork, cmdstanr, here, posterior, bayestestR)
+pacman::p_load(tidyverse, ggplot2, poisbinom, patchwork, cmdstanr, here, posterior, bayestestR, bayesplot)
 ```
 
 # MUNE
@@ -96,10 +97,10 @@ is therefore Poisson-binomial distributed. This process allows us to generate da
 
 ```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5}
 K = ggplot(outcome)+geom_point(aes(x=Stim, y =Y))+theme_classic()+
-  labs(title="number of recruited motor units", x="stimulus (mV)", y = "K")+
+  labs(title="number of recruited motor units", x="stimulus (mA)", y = "K")+
   theme(plot.title = element_text(hjust = 0.5))
 
-p = ggplot(df)+geom_line(aes(x=Stim, y=p), linewidth = 2, color ="darkgreen")+theme_classic()+labs(title = "Probabilistic response curve", x = "Stimulus (mV)", y = "P(fire)")+theme(plot.title = element_text(hjust = 0.5))
+p = ggplot(df)+geom_line(aes(x=Stim, y=p), linewidth = 2, color ="darkgreen")+theme_classic()+labs(title = "Probabilistic response curve", x = "Stimulus (mA)", y = "P(fire)")+theme(plot.title = element_text(hjust = 0.5))
 
 K+p
 ```
@@ -107,7 +108,7 @@ K+p
 The left graph above shows the total number of different motor units that are active at each specific stimulus intensity. The right graph shows the probabilistic firing curve for each of the five motor units. Since all units share the same mean and standard deviation of their instantaneous threshold, the probabilistic firing curve is the same for all units. We can now implement a simple Stan model in which the stimulus intensity is provided as the input and the total number of activated motor units at each stimulus intensity is the observed output. This allows us to test whether the Poisson-binomial likelihood correctly describes the generated data and whether the shared threshold mean and standard deviation can be recovered from the model.
 
 ```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-mod = cmdstan_model(here("models","Poisson_binomial_test.stan")) 
+mod = cmdstan_model(here("models", "Archive","Poisson_binomial_test.stan")) 
 
 fit_path = here("fits", "fixed_thresh_fixed_sigma.rds")
 draws_path = here("fits", "fixed_thresh_fixed_sigma_draws.rds")
@@ -141,7 +142,7 @@ p_draws= as_draws_df(draws, parameter = "pp") %>% select(starts_with("pp[")) %>%
 
 ggplot(p_draws)+geom_line(aes(x=Stim, y = p), linewidth = 2, color = "green")+geom_line(aes(x=Stim, y = mean_p),linewidth = 2, color = "red", alpha = 0.5)+
   theme_classic()+facet_wrap(~Unit)+
-  labs(title = "Comparison simulated & estimated probabilistic response curves", y = "P(fire)",x="Stimulus (mV)")+
+  labs(title = "Comparison simulated & estimated probabilistic response curves", y = "P(fire)",x="Stimulus (mA)")+
   theme(plot.title = element_text(hjust = 0.5))
 
 
@@ -193,7 +194,7 @@ if (file.exists(sim_path)) {
     t_mu = t_mu,Units = Units,outcome = outcome)
     saveRDS(sim, sim_path)}
 
-ggplot(Units)+geom_line(aes(x=Stim, y=pp), linewidth = 2, color ="darkgreen")+theme_classic()+labs(title = "Probabilistic response curve", x = "Stimulus (mV)", y = "P(fire)")+theme(plot.title = element_text(hjust = 0.5))+geom_vline( data = distinct(Units, unit, t_mu),aes(xintercept = t_mu), linewidth =1.5, linetype = "longdash")+facet_wrap(~unit)
+ggplot(Units)+geom_line(aes(x=Stim, y=pp), linewidth = 2, color ="darkgreen")+theme_classic()+labs(title = "Probabilistic response curve", x = "Stimulus (mA)", y = "P(fire)")+theme(plot.title = element_text(hjust = 0.5))+geom_vline( data = distinct(Units, unit, t_mu),aes(xintercept = t_mu), linewidth =1.5, linetype = "longdash")+facet_wrap(~unit)
 
 
 
@@ -204,7 +205,7 @@ The plot above shows simulated data for this scenario. Each unit has a slightly 
 We can extend our Stan model to incorporate this between-unit variation and assess whether it can still reliably recover the underlying parameters.
 
 ```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-mod = cmdstan_model(here("models","Poisson_binomial_test2.stan")) 
+mod = cmdstan_model(here("models","Archive","Poisson_binomial_test2.stan")) 
 
 fit_path = here("fits", "ran_thresh_fixed_sigma.rds")
 draws_path = here("fits", "ran_thresh_fixed_sigma_draws.rds")
@@ -247,10 +248,413 @@ p_draws= as_draws_df(draws, variable = "pp") %>% select(starts_with("pp[")) %>%
 
 ggplot(p_draws)+geom_line(aes(x=Stim, y = pp), linewidth = 2, color = "green")+geom_line(aes(x=Stim, y = mean_p),linewidth = 2, color = "red", alpha = 0.5)+
   theme_classic()+  geom_ribbon(aes(x = Stim, ymin = lower, ymax = upper),fill = "red",alpha = 0.1) +facet_wrap(~unit, scales ="free_x")+
-  labs(title = "Comparison simulated & estimated probabilistic response curves", y = "P(fire)",x="Stimulus (mV)")+
+  labs(title = "Comparison simulated & estimated probabilistic response curves", y = "P(fire)",x="Stimulus (mA)")+
   theme(plot.title = element_text(hjust = 0.5))
 ```
 
 In the plot above, the estimated probabilistic response curves are shown in red, with the corresponding 95% HDIs. Even after incorporating between-unit variation in threshold, the model continues to accurately estimate the individual probabilistic response curves for each unit.
+
+## Optimzing likelihood function
+
+As stated above, the outcome data at the moment is generated by a Poisson-Binomial distribution. However, as Stan does not have a built-in likelihood function for the Poisson-binomial, we have to implement our own likelihood. Up until this point, we have made use of what they call the lexicographic approach. In this approach, for every outcome \(K_i\), it iterates over every possible combination that could have generated this outcome. So for example, if you have a total number of \(N = 3\) available motor units and \(K_i = 2\) units fire, this can be because of the combinations \((u_1, u_2)\) or \((u_1, u_3)\) or \((u_2, u_3)\). It evaluates the likelihood of every combination and estimates the probabilities of the units to fire from that. However, this approach can become computationally expensive as the total number of possible combinations scales exponentially as \(2^n\). Below is a plot of how the running time of the lexicographic approach scales with the amount of units to demonstrate this:
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+# load fits 
+
+fits = readRDS(here("fits", "fits_lex_dyn.rds"))
+
+# running time and sim U
+sim_N = map_dfr(fits, ~.x$sim_units, .id ="run")%>% mutate(run = as.numeric(run)) %>% select(U, run) %>% group_by(run) %>% distinct() %>% ungroup()
+
+time_lex = map_dbl(fits, ~.x$time_lex) %>% enframe(name = "run", value = "time") %>% mutate(run = as.numeric(run)) %>% left_join(sim_N, by = "run") %>% mutate(approach = "lexicographic")
+
+plot = ggplot(time_lex)+geom_point(aes(x=as.factor(U), y=time), col = "salmon")+
+  stat_summary(aes(x=as.factor(U), y = time, group = 1), geom = 'line', fun = 'mean', col = 'salmon', linewidth =1.2)+
+  theme_light()+labs(x="number of units",y="run time", title = "running time over different # of units")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot
+
+```
+
+Although it might not seem like much at small scales, the running time increases exponentially as the number of units grows, which is a major bottleneck given that up to 100 motor units can be detected in healthy individuals. Fortunately, this issue has been addressed before by optimizing the likelihood calculation using a dynamic programming approach. Instead of exhaustively enumerating every possible combination of firing units, this method breaks the problem down sequentially by adding one motor unit at a time. Using an \((N + 1) \times (N + 1)\) matrix \(\alpha\), it iteratively computes the log-probability of observing \(K_i\) firing units out of the first \(n\) units by combining the cases where the \(u\)-th unit either fires on the \(i\)-th stimulus (with probability \(\theta_{u,i}\)) or stays silent (with probability \(1 - \theta_{u,i}\)). This eliminates redundant calculations and reduces the computational complexity from exponential \(2^n\) down to quadratic \(n^2\), making the scaling substantially less severe. To validate this new implementation, we evaluate the log-likelihoods it produces across a set of \(K\) out of \(N\) outcomes and compare them against both the lexicographic approach and the analytical solution provided by the R package `poisbinom`. We simulate a vector \(\Theta\) of length 10, where every probability is a random draw from a uniform distribution between 0 and 1:
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+## check log-likelihood over many units
+U = 10
+
+pp = runif(U)
+
+
+mod_lex = cmdstan_model(here("models","Archive", "Likelihood_test", "poisson_binomial_lex.stan"))
+mod_dyn = cmdstan_model(here("models","Archive", "likelihood_test", "poisson_binomial_dynamic.stan"))
+
+data_stan = list(N = U, theta = pp)
+f_lex = mod_lex$sample(data = data_stan, iter_sampling = 1, chains = 1, fixed_param = T)
+f_dyn = mod_dyn$sample(data = data_stan, iter_sampling = 1, chains = 1, fixed_param = T)
+    
+log_lik = log(dpoisbinom(0:U, pp))
+    
+draws_lex = as_draws_df(f_lex$draws()) %>% select(-contains('.')) %>% pivot_longer(cols = everything()) %>% pull(value)
+draws_dyn = as_draws_df(f_dyn$draws()) %>% select(-contains('.')) %>% pivot_longer(cols = everything()) %>% pull(value)
+    
+df = data.frame(u = 0:U, analytical = log_lik, lexicographic = draws_lex, dynamic = draws_dyn)
+
+df = df %>% pivot_longer(cols = c(analytical, lexicographic, dynamic), names_to = "approach", values_to = "log_likelihood")
+
+plot = ggplot(df)+geom_bar(aes(x=as.factor(u), y = log_likelihood), stat = "identity", col = "black", fill = "grey", linewidth = 1.2)+labs(x= "different possible outcomes (K)")+facet_wrap(~approach)+theme_classic()
+
+plot
+```
+As shown above, all approaches yield identical log-likelihoods for the same probability vector. The final step is to evaluate how the scaling of the dynamic programming approach compares to the lexicographic method. Using the previously simulated datasets, we benchmark the fitting time across an increasing number of units.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+time_dyn = map_dbl(fits, ~.x$time_dyn) %>% enframe(name = "run", value = "time") %>% mutate(run = as.numeric(run)) %>% left_join(sim_N, by = "run") %>% mutate(approach = "dynamic")
+
+time = bind_rows(time_dyn, time_lex)
+
+plot = ggplot(time)+geom_point(aes(x=as.factor(U), y=time, col = as.factor(approach)))+
+  stat_summary(aes(x=as.factor(U), y = time, group = as.factor(approach), col = as.factor(approach)), geom = 'line', fun = 'mean', linewidth =1.2)+
+  theme_light()+labs(x="number of units",y="run time", title = "running time over different # of units", col = "approach")+
+  theme(plot.title = element_text(hjust = 0.5))+ scale_color_manual(values = c("lexicographic" = "salmon", "dynamic" = "#11999e"))
+
+plot
+
+```
+
+As demonstrated in the plot, the scaling behavior of the dynamic programming approach is substantially more efficient. While running times are comparable at smaller unit sizes, the performance gap widens dramatically as the number of units increases, which is a crucial advantage when scaling to larger systems (e.g. 50 units).
+
+The complete source code for both implementations is available on the [Stan Discourse Forum Discussion](https://discourse.mc-stan.org/t/poisson-binomial-distribution-any-existing-stan-implementation/4220).
+
+## Unit-specific threshold variance
+
+The model described now assumes that all motor units exhibit the same degree of instantaneous threshold variability. In other words, the standard deviation of the instantaneous threshold distribution is assumed to be identical across units. However, this assumption is overly simplistic. 
+
+Experimental studies have demonstrated that the variability of motor axonal thresholds is not necessarily identical across individual units. Some motor axons exhibit relatively stable thresholds, whereas others show considerably greater fluctuations in their excitability. This variability is generally quantified using the relative spread (RS), which expresses the standard deviation of the threshold distribution relative to its mean [@Hales2004]. To account for this heterogeneity, we can extend the model by allowing the within-unit threshold standard deviation, ($\sigma_{\tau}$), to vary between motor units. This means that each motor unit has its own characteristic degree of instantaneous threshold variability. The instantaneous threshold is therefore distributed as:
+
+$$
+\tau_{i,u} \sim N(\mu_{\tau_u},\sigma_{\tau_u})
+$$
+Notice how $\sigma_{\tau}$ changed to $\sigma_{\tau_u}$, the unit-specific standard deviation of instantaneous threshold fluctuations for unit $u$. The resulting instantaneous threshold distributions for a simulated example with six motor units ($U =6$) are illustrated below.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+fits = readRDS(here("fits", "N2_6_t_sigma.rds"))
+run = 45
+
+sim = map_dfr(fits, ~.x$sim_units, .id = "run") %>% filter(U == 6) %>% filter(run == 45) %>% group_by(unit) %>% mutate(density = dnorm(Stim, t_mu[unit], t_sigma[unit])) %>% arrange(unit, Stim)
+
+ggplot(sim)+geom_line(aes(x=Stim, y = density, group = as.factor(unit), col = as.factor(unit)), linewidth = 1.2)+labs(title = expression("Instantaneous threshold (" *tau[list(u, i)]* ") distribution for 6 different simulated units"), x = "Stimulus (mA)", y = "density", color = "unit")+theme_classic()+scale_x_continuous(limits = c(5,20))+scale_color_brewer(palette = "YlOrRd")+theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+As illustrated in the figure above, the model now captures differences in instantaneous threshold variability between motor units. For example, unit 2 exhibits a relatively broad threshold distribution, indicating greater moment-to-moment fluctuations in excitability. In contrast, unit 4 has a much narrower distribution, reflecting more consistent activation thresholds.
+
+As before, we can translate these threshold distributions into probabilistic firing curves by taking the cumulative distribution function (CDF) of each distribution. These curves show the probability of activating a motor unit and generating an action potential across stimulation intensities. The resulting probabilistic firing curves are shown on the right, along with the data generated from these curves.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+CDF = ggplot(sim)+geom_line(aes(x=Stim, y = pp, group = as.factor(unit), col = as.factor(unit)), linewidth = 1.2)+labs(title = "probabilistic firing curves (CDF)", x = "Stimulus (mA)", y = "P(fire)", color = "unit")+theme_classic()+scale_x_continuous(limits = c(5,20))+scale_color_brewer(palette = "YlOrRd")+theme(plot.title = element_text(hjust = 0.5))
+
+out = fits[[45]][["sim_out"]]
+K = ggplot(out)+geom_point(aes(x=Stim, y =Y))+theme_classic()+
+  labs(title="number of recruited motor units", x="Stimulus (mA)", y = "K")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+K|CDF
+
+```
+
+As illustrated above, the probabilistic firing curves now differ between motor units in terms of both their mean activation thresholds and their threshold variability. Consequently, the units exhibit different firing probabilities and slopes (characterized by $\sigma_{\tau_u}$), reflecting differences in both their average excitability and the consistency of their instantaneous thresholds ($\tau_{u,i}$).
+
+We can now fit the updated model to the simulated data to investigate whether it can successfully recover these unit-specific parameters, including both the mean thresholds and their associated standard deviations. Unfortunately, the current parameterization failed to converge and produced many divergences; the pairs plot below shows the resulting posterior geometry for the first 2 threshold variances and means.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+file = here("fits", "N6_t_sigma_non_hier.rds")
+
+if (file.exists(file)) {
+  res= readRDS(file)}else{
+    mod = cmdstan_model(here("models","Archive", "t_sigma_non_hier.stan"))
+    
+    outcome = fits[[45]][["sim_out"]]
+    data_stan = list(Y = outcome$Y, S = outcome$Stim, U = first(sim$U), N=200)
+    fit = mod$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, chains = 4, parallel_chains = 4, adapt_delta = 0.99, refresh = 100)
+    draws = fit$draws(format = "draws_df")
+    res = list(draws =draws, dia = fit$sampler_diagnostics(format = "draws_df"))
+    saveRDS(res, file)} 
+
+pars = c("t_mu[1]", "t_mu[2]", "t_sigma[1]", "t_sigma[2]")
+
+np = as_tibble(res[[2]]) %>% pivot_longer(cols = -c(.chain, .iteration, .draw), 
+    names_to = "Parameter",values_to = "Value") %>%rename(Chain = .chain, Iteration = .iteration) %>% 
+  select(Parameter, Iteration, Chain, Value) %>% mutate(Parameter= factor(Parameter))
+
+mcmc_pairs(res[[1]], pars = pars, np = np)
+
+```
+
+As shown in the pairs plot above, the posterior geometry is difficult to explore, with divergences scattered throughout the parameter space. The sampler appears to struggle particularly with the [ordering constraint](https://mc-stan.org/docs/2_29/reference-manual/ordered-vector.html) on the threshold means, while the variances also prove difficult to estimate, making the root cause hard to isolate. However, leveraging shared information across units via a hierarchical structure may facilitate estimation of the unit-specific parameters.
+
+## Introducing hierarchy
+
+Within the generative framework, it also makes sense to quantify the degree of overlap between motor units. Motor unit excitability may differ systematically between individuals. For example, motor units in patients with ALS may exhibit greater variability in their activation responses than those in healthy controls [@Jillapalli2004]. This highlights that we cannot assume the same prior knowledge of unit-specific parameters for everyone, emphasising the need for a measure that captures between-unit properties.
+
+To capture these between-unit characteristics, we want to quantify variation in both the unit-specific threshold means ($\mu_{\tau_u}$) and threshold variances ($\sigma_{\tau_u}$). We can incorporate this into our model by introducing a hierarchical structure for both parameters, allowing information to be shared across units while accounting for between-unit variation. We can incorporate this by modelling each parameter as being generated from a shared normal distribution, with its mean and variance treated as hyperparameters that can vary and that are to be estimated. This gives us the following:
+
+$$
+\tau_{i,u} \sim N(\mu_{\tau_u},\sigma_{\tau_u})
+$$
+$$
+\mu_{\tau_u} \sim N(\mu_{\tau},\sigma_{\mu_\tau})
+$$
+$$
+\sigma_{\tau_u} \sim LN(\mu_{\sigma_\tau},\sigma_{\tau})
+$$
+
+Note that $\mu_\tau$ retains the same notation but now has a different interpretation. Previously, it represented the shared unit-specific threshold mean across all motor units. In the hierarchical model, it represents the population-level mean of the unit-specific threshold means, while the individual unit-specific values are modelled as draws from this population distribution. It determines the overall location of the probabilistic firing curves in the stimulus space. The variance, $\sigma_{\mu_\tau}$, of this population distribution determines how much the unit-specific threshold means vary around the population mean, $\mu_\tau$. A low variance indicates that the firing curves are clustered closely together around $\mu_\tau$, whereas a high variance indicates greater dispersion across motor units. 
+
+The mean of the population distribution of threshold variances, $\mu_{\sigma_\tau}$, determines the overall spread of the individual instantaneous threshold distributions and motor unit firing curves. A higher value indicates greater variability in the firing thresholds within individual motor units, resulting in shallower recruitment curves. Conversely, a lower value produces steeper curves, approaching an all-or-none, step-like firing response. Again, note that $\sigma_{\tau}$ now has a different interpretation than before. Previously, it represented the shared unit-specific standard deviation of the instantaneous threshold distributions across motor units. In the hierarchical model, it represents the between-unit spread of these unit-specific threshold standard deviations. A high value indicates greater heterogeneity in the slopes of the firing curves across motor units, whereas a low value indicates that these slopes are more similar and clustered around the population mean, $\mu_{\sigma_\tau}$. Note that both parameters are defined on the log scale to ensure that the instantaneous threshold standard deviations remain strictly positive.
+
+below is an interactive shiny app that shows how each of these parameters affect the probabilistic firing curves:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+N = 300
+
+ui = fluidPage(
+  withMathJax(),
+
+  sidebarLayout(
+
+    sidebarPanel(
+      
+      sliderInput(
+        "U",
+        "Units",
+        min = 1, max = 9, value = 6, step = 1
+      ),
+
+
+      sliderInput(
+        "t_mu_mu",
+        label = HTML("\\(\\mu_{\\tau}\\)"),
+        min = 5, max = 15, value = 10, step = 0.1
+      ),
+
+      sliderInput(
+        "t_mu_sigma",
+        label = HTML("\\(\\sigma_{\\mu_\\tau}\\)"),
+        min = 0.5, max = 3, value = 1, step = 0.1
+      ),
+
+
+      sliderInput(
+        "t_sigma_mu_log",
+        label = HTML("\\(\\mu_{\\sigma_\\tau}\\)"),
+        min = -2, max = 1, value = 0, step = 0.1
+      ),
+
+      sliderInput(
+        "t_sigma_sigma",
+        label = HTML("\\(\\sigma_{\\tau}\\)"),
+        min = 0.05, max = 1, value = 0.5, step = 0.05
+      )
+    ),
+
+    mainPanel(
+
+      plotOutput("cdf_plot")
+    )
+  )
+)
+
+server = function(input, output) {
+
+  sim = reactive({
+    set.seed(223)
+    
+    U = input$U
+
+    Stim = seq(0, 25, length.out = N)
+
+    t_mu = sort(rnorm(
+      U, input$t_mu_mu, input$t_mu_sigma
+    ))
+
+    t_sigma = exp(rnorm(
+      U, input$t_sigma_mu_log, input$t_sigma_sigma
+    ))
+
+    expand.grid(
+      unit = seq_len(U),
+      Stim = Stim
+    ) %>%
+      mutate(
+        t_mu = t_mu[unit],
+        t_sigma = t_sigma[unit],
+        pp = pnorm((Stim - t_mu) / t_sigma),
+        density = dnorm(Stim, t_mu, t_sigma)
+      )
+
+  })
+
+
+  output$cdf_plot = renderPlot({
+
+    ggplot(sim()) +
+      geom_line(
+        aes(
+          x = Stim,
+          y = pp,
+          colour = factor(unit),
+          group = unit
+        ),
+        linewidth = 1.2
+      ) +
+      labs(
+        title = "Probabilistic firing curves",
+        x = "Stimulus (mA)",
+        y = "P(fire)",
+        colour = "Unit"
+      ) +
+      theme_classic() +
+      scale_color_brewer(palette = "YlOrRd")+theme(plot.title = element_text(hjust = 0.5))
+
+  })
+
+}
+
+shinyApp(ui = ui, server = server)
+
+``` 
+
+We can also assess whether this extension allows us to estimate both unit-specific threshold means and variances. To do so, we fit the hierarchical model to the same data as in the previous section and evaluate its fit. 
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+draws = fits[[45]][["draws"]]
+
+draws_hier = draws %>%
+  select(t_mu_mu, t_mu_sigma, t_sigma_mu_log, t_sigma_sigma) %>%
+  pivot_longer(
+    cols = everything(),
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  mutate(type = "Posterior")
+
+prior_hier = data.frame(
+  t_mu_mu = rnorm(4000, 12, 0.5),
+  t_mu_sigma = exp(rnorm(4000, 0, 0.2)),
+  t_sigma_mu_log = rnorm(4000, -0.3, 0.5),
+  t_sigma_sigma = exp(rnorm(4000, -1, 0.3))
+) %>%
+  pivot_longer(
+    cols = everything(),
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  mutate(type = "Prior")
+
+sim_hier = sim %>%
+  ungroup() %>%
+  select(t_mu_mu, t_mu_sigma, t_sigma_mu_log, t_sigma_sigma) %>%
+  distinct() %>%
+  pivot_longer(
+    cols = everything(),
+    values_to = "sim",
+    names_to = "parameter"
+  )
+
+hier = bind_rows(draws_hier, prior_hier) %>%
+  left_join(sim_hier, by = "parameter")
+
+ggplot(hier) + geom_density(aes(x = value, fill = as.factor(type)), alpha = 0.6)+
+ geom_vline(aes(xintercept = sim), linewidth = 1)+theme_classic()+facet_wrap(~parameter, scales  ="free_x")+scale_fill_manual(
+    values = c("Prior" = "green", "Posterior" = "red")
+  )+ labs(x="parameter value", title = "Prior-Posterior update compared to simulated value", fill = NULL)+theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Note that t_mu_mu = $\mu_{\tau}$, t_mu_sigma = $\sigma_{\mu_{\tau}}$, t_sigma_mu_log = $\mu_{\sigma_{\tau}}$, and t_sigma_sigma = $\sigma_{\sigma_{\tau}}$.
+
+We can see that the posterior distributions of the population means ($\mu_{\tau}$, $\mu_{\sigma_{\tau}}$) attributes more density towards the true values, indicating that these parameters are reasonably well estimated. The variance parameters, particularly the between-unit variability in the unit-specific threshold standard deviations, are more difficult to estimate (as we will also see later when increasing the number of units). Their posterior distributions remain largely centred around the prior, suggesting that the data provide limited information about the degree of between-unit variability. This is expected given the relatively small number of units and the low simulated variability. Since our primary interest is estimating the number of motor units, this limitation is not a major concern at this stage. We can now assess whether the model successfully recovers the probabilistic firing curves, providing insight into its ability to estimate unit-specific parameters. 
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+Stim = fits[[45]][["sim_out"]]$Stim 
+Units = fits[[45]][["sim_units"]] %>% select(pp, Stim, unit) %>% rename("sim" = "pp")
+
+draws_pp = draws %>%
+  select(contains("pp[")) %>% pivot_longer(cols = everything(),names_to = "p",values_to = "posterior")%>%
+  group_by(p) %>% summarise(mean_p = mean(posterior), hdi = list(hdi(posterior, ci = 0.95)),.groups = "drop") %>% mutate(lower = map_dbl(hdi, ~ .x$CI_low),upper = map_dbl(hdi, ~ .x$CI_high)) %>%
+  select(-hdi) %>% mutate(Stim = Stim[as.integer(str_extract(p, "(?<=\\[)\\d+"))],unit = as.integer(str_extract(p, "(?<=,)\\d+(?=\\])"))) %>% select(!p) %>% left_join(Units, by = c("unit", "Stim"))
+
+ggplot(draws_pp)+geom_line(aes(x=Stim, y = sim), linewidth = 2, color = "green")+geom_line(aes(x=Stim, y = mean_p),linewidth = 2, color = "red", alpha = 0.5)+
+  theme_classic()+  geom_ribbon(aes(x = Stim, ymin = lower, ymax = upper),fill = "red",alpha = 0.1) +facet_wrap(~unit, scales ="free_x")+
+  labs(title = "Comparison simulated & estimated probabilistic response curves", y = "P(fire)",x="Stimulus (mA)")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+As shown, the model can recover individual firing curves with reasonable precision. Although the estimated slopes and thresholds occasionally deviate slightly from their simulated values, the estimated curves generally remain within the range of the simulated curves.
+
+One caveat is that probabilities had to be constrained to the interval $[1e^{-12};1-1e^{-12} ]$ to facilitate sampling. Although this is not entirely elegant from a mechanistic perspective, the substantial improvement in sampler performance justifies this pragmatic choice. An important next step is to investigate whether these recovery results hold as the number of available motor units increases.
+
+## Increasing the number of available motor units
+
+So far, we have fixed the total number of available units ($U$) at a relatively low value of around 6 motor units. This is low even for some patient populations, where the number of available motor units can be considerably higher. In healthy controls, this number can reach and even exceed 100, making the scenarios considered so far relatively simplistic. We will therefore investigate model fits with 10, 20, 30, 35, and 50 available motor units to assess whether the model continues to provide reliable estimates as the number of units increases. Below, we examine parameter recovery when fitting the same model to datasets containing 10, 20, 30, and 35 motor units. Each point represents a single simulation generated from the model and subsequently fitted using the same model. In total, 100 simulations were performed, with 25 simulations for each value of $U$. All fits ended in 0 divergent transitions.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+fits = readRDS(here("fits", "N10_35_t_sigma.rds"))
+
+# Extract simulated parameters in a long format
+sim_param = map_dfr(fits, ~.x$sim_units, .id = "run") %>% select(t_sigma, t_mu, unit, run, U, t_mu_mu, t_mu_sigma,t_sigma_sigma, t_sigma_mu_log) %>% mutate(run = as.numeric(run)) %>% group_by(run) %>%  distinct() %>% ungroup() %>% pivot_wider(names_from = unit,values_from = c(t_mu, t_sigma),names_glue = "{.value}[{unit}]") %>% pivot_longer(cols = c(starts_with("t_sigma"), starts_with("t_mu")), names_to = "variable",values_to = "value") %>% rename("sim" = "value") %>%  mutate(unit = str_extract(variable, "(?<=\\[)[^\\]]+")) %>% mutate(unit = as.numeric(unit))
+
+# Extract summary 
+summary = map_dfr(fits, ~.x$sum, .id = 'run') %>% mutate(run = as.numeric(run)) %>% filter(str_detect(variable, "t_mu\\[") | variable == "t_sigma"|variable =="t_mu_mu"|variable =="t_mu_sigma"| str_detect(variable, "t_sigma\\[")|variable =="t_sigma_mu_log"|variable =="t_sigma_sigma") %>% left_join(sim_param, by = c("run", "variable")) 
+
+# plot all together
+plotmeans_low = ggplot(summary %>% filter(str_detect(variable, "t_mu\\[")) %>% filter(unit<=17))+geom_point(aes(x=sim, y = mean))+
+  geom_errorbar(aes(x=sim, ymin = q5, ymax = q95,))+geom_abline(intercept = 0, slope =1, linetype = "dashed")+
+  theme_classic()+facet_wrap(~variable, scales = 'free')
+
+plotmeans_high= ggplot(summary %>% filter(str_detect(variable, "t_mu\\[")) %>% filter(unit>17))+geom_point(aes(x=sim, y = mean))+
+  geom_errorbar(aes(x=sim, ymin = q5, ymax = q95,))+geom_abline(intercept = 0, slope =1, linetype = "dashed")+
+  theme_classic()+facet_wrap(~variable, scales = 'free')
+
+plotsigma_low = ggplot(summary %>% filter(str_detect(variable, "t_sigma\\[")) %>% filter(unit<=17))+geom_point(aes(x=sim, y = mean))+
+  geom_errorbar(aes(x=sim, ymin = q5, ymax = q95,))+geom_abline(intercept = 0, slope =1, linetype = "dashed")+
+  theme_classic()+facet_wrap(~variable, scales = 'free')
+
+plotsigma_high = ggplot(summary %>% filter(str_detect(variable, "t_sigma\\[")) %>% filter(unit>17))+geom_point(aes(x=sim, y = mean))+
+  geom_errorbar(aes(x=sim, ymin = q5, ymax = q95,))+geom_abline(intercept = 0, slope =1, linetype = "dashed")+
+  theme_classic()+facet_wrap(~variable, scales = 'free')
+
+plot_pop = ggplot(summary %>% filter(variable %in% c("t_mu_mu", "t_mu_sigma", "t_sigma_sigma", "t_sigma_mu_log")))+geom_point(aes(x=sim, y = mean))+
+  geom_errorbar(aes(x=sim, ymin = q5, ymax = q95,))+geom_abline(intercept = 0, slope =1, linetype = "dashed")+
+  theme_classic()+facet_wrap(~variable, scales = 'free')
+
+plotmeans_low
+plotmeans_high
+plotsigma_low
+plotsigma_high
+plot_pop
+
+```
+
+We can see that most parameters are recovered reasonably well, with $\mu_{\tau_u}$ (t_mu[u]) following the identity line particularly closely. The unit-specific standard deviations, $\sigma_{\tau_u}$ (t_sigma[u]), are also generally recoverable, although estimates tend to shrink towards the prior when the true values are relatively high. This behaviour is expected given the influence of the prior and is not a concern. Regarding the group-level parameters, the population means ($\mu_{\tau}$ and $\mu_{\sigma_\tau}$) are recovered reasonably well. However, the population-level standard deviations ($\sigma_{\mu_\tau}$ and $\sigma_{\tau}$), which capture between-unit variability in the unit-specific means and standard deviations, show a tendency to shrink towards their prior means. As discussed earlier, this is not a major concern at this stage, given the relatively limited information available to estimate between-unit variability. 
+
+We can extend this analysis to the case of 50 available motor units. However, displaying all parameter recovery plots becomes impractical in this case. Instead, we focus on comparing the simulated and estimated probabilistic firing curves to assess whether the model can still recover unit-specific firing behaviour.
+
+```{r, echo =FALSE, fig.align='center', fig.width=8, fig.height=3.5, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+fits = readRDS(here('fits', "N50_t_sigma.rds"))
+Stim = fits[[3]][["sim_out"]]$Stim
+
+sim_pp = fits[[3]][["sim_units"]] %>% select(unit, Stim, pp) %>% mutate(type = "Simulated")
+
+est_pp = fits[[3]][["sum"]] %>% filter(str_detect(variable, "pp\\[")) %>% select(mean, variable) %>% mutate(Stim = Stim[as.integer(str_extract(variable, "(?<=\\[)\\d+"))],unit = as.integer(str_extract(variable, "(?<=,)\\d+(?=\\])"))) %>% select(-variable) %>% mutate(type = "Estimated") %>% rename("pp" = 'mean')
+
+pp = bind_rows(sim_pp, est_pp)
+
+ggplot(pp)+geom_line(aes(x=Stim, y= pp, group = as.factor(unit)))+facet_wrap(~type, ncol = 1)+theme_light()+labs(y="P(fire)")+scale_x_continuous(limits=c(7,18))
+```
+
+For larger numbers of motor units, we observe a potential trade-off between the steepness of the probabilistic firing curves and their spread across the stimulus space. This suggests a possible trade-off between $\sigma_{\mu_\tau}$ and $\mu_{\sigma_\tau}$. At this stage, however, it is unclear whether this relationship affects the estimation of the total number of motor units, and we therefore do not consider it a concern for now. Nevertheless, it is an aspect worth revisiting in future analyses.
 
 ## References

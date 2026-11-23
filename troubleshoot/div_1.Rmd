@@ -1,0 +1,96 @@
+---
+title: "div_1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+pacman::p_load(cmdstanr, ggplot2, tidyverse, here,posterior,poisbinom, bayesplot, patchwork, future, furrr )
+```
+
+```{r}
+# investigate t_sigma, t_mu_sigma, average distance, minimum distance
+fits = readRDS(here("fits", "N3_N7.rds"))
+
+sim = map_dfr(fits, ~.x$sim_units, .id = "run") %>% select(t_sigma, t_mu, unit, run, U, t_mu_sigma, spacing) %>% rename(delta = spacing) %>% group_by(run) %>%  distinct() %>% ungroup() %>% pivot_wider(names_from = unit,values_from = c(t_mu, delta),names_glue = "{.value}[{unit}]") %>% pivot_longer(cols = c(t_sigma, starts_with("t_mu"), starts_with("delta")), names_to = "variable",values_to = "value") %>% filter(!is.na(value)) %>% rename("sim" = "value") %>%mutate(variable = ifelse(str_detect(variable, "^delta\\["),paste0("delta[", as.numeric(str_extract(variable, "\\d+")) - 1, "]"),variable)) %>%  filter(variable != "delta[0]")
+
+dia = map_dfr(fits, ~.x$dia, .id ="run") %>% group_by(run) %>% summarise(div = ifelse(sum(divergent__)>0,1,0), max_t = ifelse(any(treedepth__>=10), 1,0)) %>% mutate(U = ifelse(as.numeric(run)<=100,3,7))
+dia %>% group_by(U) %>% summarise(pp = sum(div)/100)
+
+# t_sigma
+summary = map_dfr(fits, ~.x$sum, .id = "run") %>% filter(str_detect(variable, "t_mu\\[|delta\\[") | variable == "t_sigma") %>% 
+  mutate(U = ifelse(as.numeric(run)<=100, 3,7)) %>% left_join(sim, by = c("run","U", "variable")) %>% left_join(dia, by = c('run', 'U'))
+
+ggplot(summary)+geom_point(aes(x=sim, y = mean, col = as.factor(div)))+geom_errorbar(aes(x=sim, ymin = q5, ymax = q95, col = as.factor(div))) + facet_wrap(~ U+variable, scales = "free")+geom_abline(intercept = 0, slope = 1, linetype = "dashed")+theme_light()
+
+```
+
+```{r}
+# Positive_ordered vector stan
+
+fits_PO = readRDS(here("fits", "N7_pos_ord.rds"))
+
+# running time
+time_PO = map_dbl(fits_PO, ~.x$time) %>% enframe(name = "run", value = "time") %>% mutate(app = "PO")
+time_own =  map_dbl(fits, ~.x$time) %>% enframe(name = "run", value = "time") %>% mutate(app = "own") %>% filter(run> 100)
+
+time = bind_rows(time_PO, time_own)
+
+ggplot(time)+geom_histogram(aes(x=time), bins = 30, fill = 'steelblue', color = 'black' )+facet_wrap(~app)+theme_light()
+
+# Parameter recovery new
+dia_PO = map_dfr(fits_PO, ~.x$dia, .id ="run") %>% group_by(run) %>% summarise(sum_div = sum(divergent__), div = ifelse(sum(divergent__)>0,1,0), max_t = ifelse(any(treedepth__>=10), 1,0)) %>% mutate(U=7) 
+
+dia_delta = map_dfr(fits, ~.x$dia, .id ="run") %>% group_by(run) %>% summarise(div = ifelse(sum(divergent__)>0,1,0), max_t = ifelse(any(treedepth__>=10), 1,0)) %>% mutate(U = ifelse(as.numeric(run)<=100,3,7))%>% filter(as.numeric(run)>100) %>%  mutate(run = as.character(as.numeric(run)-100))
+
+dia_PO %>% summarise(pp = sum(div)/100) 
+
+sim = map_dfr(fits_PO, ~.x$sim_units, .id = "run") %>% select(t_sigma, t_mu, unit, run, U, t_mu_sigma) %>% group_by(run) %>%  distinct() %>% ungroup() %>% pivot_wider(names_from = unit,values_from = c(t_mu),names_glue = "{.value}[{unit}]") %>% pivot_longer(cols = c(t_sigma, starts_with("t_mu")), names_to = "variable",values_to = "value") %>% filter(!is.na(value)) %>% rename("sim" = "value") 
+
+summary_PO = map_dfr(fits_PO, ~.x$sum, .id = "run") %>% filter(str_detect(variable, "t_mu\\[") | variable == "t_sigma") %>% 
+  mutate(U =7) %>% left_join(sim, by = c("run","U", "variable")) %>% left_join(dia_PO, by = c('run', 'U')) %>% mutate(app = "pos_ord")
+summary_delta = map_dfr(fits, ~.x$sum, .id = "run") %>% filter(as.numeric(run)>100) %>% mutate(run = as.character(as.numeric(run)-100)) %>% filter(str_detect(variable, "t_mu\\[") | variable == "t_sigma") %>% 
+  mutate(U =7) %>% left_join(sim, by = c("run","U", "variable")) %>% left_join(dia_delta, by = c('run', 'U')) %>% mutate(app = "delta")
+
+summary = bind_rows(summary_PO, summary_delta)
+
+ggplot(summary)+geom_point(aes(x=sim, y = mean, col = as.factor(div)))+geom_errorbar(aes(x=sim, ymin = q5, ymax = q95, col = as.factor(div))) + facet_wrap(~ variable+app, scales = "free")+geom_abline(intercept = 0, slope = 1, linetype = "dashed")+theme_light()
+
+# Investigate curves
+sim_data = map_dfr(fits_PO, ~.x$sim_out, .id = "run")
+sim_pp = map_dfr(fits_PO, ~.x$sim_units, .id = "run") %>% select(run, Stim, pp, U, unit) %>% select(-U)
+
+summary_PO = map_dfr(fits_PO, ~.x$sum, .id = "run") %>% filter(str_detect(variable, "pp\\[")) %>% select(run, variable, mean, q5,q95) %>% mutate(Stim = as.numeric(str_extract(variable, "(?<=\\[)\\d+")),unit = as.numeric(str_extract(variable, "(?<=,)\\d+(?=\\])"))) %>% select(-variable) %>% group_by(run, unit) %>% mutate(Stim = sim_pp %>% distinct(Stim) %>% pull(Stim)) %>% left_join(sim_pp, by = c("run", "Stim", "unit")) %>% mutate(app = "pos_ord") %>% left_join(dia_PO, by = c("run"))
+
+summary_delta = map_dfr(fits, ~.x$sum, .id = "run") %>% filter(as.numeric(run)>100) %>% mutate(run = as.character(as.numeric(run)-100)) %>% filter(str_detect(variable, "pp\\[")) %>% select(run, variable, mean, q5,q95) %>% mutate(Stim = as.numeric(str_extract(variable, "(?<=\\[)\\d+")),unit = as.numeric(str_extract(variable, "(?<=,)\\d+(?=\\])"))) %>% select(-variable) %>% group_by(run, unit) %>% mutate(Stim = sim_pp %>% distinct(Stim) %>% pull(Stim)) %>% filter(as.numeric(run)<=10) %>% left_join(sim_pp, by = c("run", "Stim", "unit")) %>% mutate(app = "delta")
+
+pp_est = bind_rows(summary_PO, summary_delta)
+
+ggplot(pp_est) + geom_line(aes(x=Stim, y = mean, group = as.factor(unit)), col = "red", linewidth = 1.5)+geom_line(aes(x=Stim, y = pp, group = as.factor(unit)), col = "blue", linewidth = 1.5)+facet_wrap(~run+app)+theme_light()
+
+# Investigate data
+con_runs = dia_PO %>% filter(div == 0) %>% distinct(run) %>% 
+  slice_sample(n = 10) %>% pull(run)
+
+div_run = dia_PO %>% filter(div == 1) %>% distinct(run) %>% 
+  slice_sample(n = 10) %>% pull(run)
+
+div_data = sim_data %>% filter(as.numeric(run)%in%div_run)
+div_summary_PO = summary_PO %>% filter(as.numeric(run)%in%div_run)%>%  left_join(div_data, by = c("run", "Stim"))
+
+con_data = sim_data %>% filter(as.numeric(run)%in%con_runs)
+con_summary_PO = summary_PO %>% filter(as.numeric(run)%in%con_runs)%>%  left_join(con_data, by = c("run", "Stim"))
+
+p = ggplot(con_summary_PO)+geom_point(aes(x=Stim, y =Y))+ facet_wrap(~run, scales = "free_x")
+pp = ggplot(con_summary_PO)+geom_line(aes(x=Stim, y =pp, group = as.factor(unit)), col = "red")+facet_wrap(~run, scales = "free_x")
+
+p_div = ggplot(div_summary_PO)+geom_point(aes(x=Stim, y =Y))+ facet_wrap(~run, scales = "free_x")
+pp_div = ggplot(div_summary_PO)+geom_line(aes(x=Stim, y =pp, group = as.factor(unit)), col = "red")+facet_wrap(~run, scales = "free_x")
+
+# investigate spacing
+sim_spacing = map_dfr(fits_PO, ~.x$sim_units, .id = "run") %>% select(t_sigma, t_mu, unit, run, U, t_mu_sigma, spacing) %>% group_by(run) %>% summarise(min_space = min(spacing, na.rm = T), mean_space = mean(spacing, na.rm =T), max_space = max(spacing,na.rm =T), t_sigma = mean(t_sigma), t_mu_sigma = mean(t_mu_sigma)) %>% left_join(dia_PO, by = c("run")) 
+
+ggplot(sim_spacing) + geom_point(aes(x=mean_space, y = div, col = as.factor(div)))+theme_light()
+ggplot(sim_spacing) + geom_point(aes(x=min_space, y = div, col = as.factor(div)))+theme_light()
+ggplot(sim_spacing) + geom_point(aes(x=max_space, y = div, col = as.factor(div)))+theme_light()
+ggplot(sim_spacing) + geom_point(aes(x=t_sigma, y = div, col = as.factor(div)))+theme_light()
+```

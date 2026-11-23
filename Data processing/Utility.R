@@ -22,7 +22,7 @@ plot_S_R = function(data, all = F){
       theme(plot.title = element_text(hjust = 0.5))
     
     P_R = ggplot(data, aes(x = `Stim(mA)`, y = `Resp(mV)`))+
-      geom_point(col = "blue")+theme_classic()+labs(x= "Stimulus number", title = "Peak Response over time")+
+      geom_point(col = "blue")+theme_classic()+labs(x= "Stimulus (mA)", title = "Peak Response over time")+
       theme(plot.title = element_text(hjust = 0.5))
     
     print(P_S/ P_R)} 

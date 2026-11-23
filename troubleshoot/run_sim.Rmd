@@ -1,0 +1,167 @@
+---
+title: "run_sim"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+pacman::p_load(cmdstanr, ggplot2, tidyverse, here,posterior,poisbinom, bayesplot, patchwork, future, furrr, shiny)
+```
+
+
+```{r}
+#test with multiple units and shared sigma 
+
+mod = cmdstan_model(here("models","Likelihood_test", "MU_dyn.stan"))
+
+fit_model = function(N, U){
+  
+  Stim = seq(0, 20, length.out = N)
+  
+  t_mu_mu = 10
+  t_mu_sigma = exp(rnorm(1, 0.5,0.3))
+
+  t_sigma = exp(rnorm(1, 0.8,0.4))
+  
+  t_mu = sort(rnorm(U, t_mu_mu, t_mu_sigma))
+  
+  Units =  expand.grid(unit = seq_len(U),Stim = Stim) %>%mutate(t_mu = t_mu[unit]) %>% mutate(pp = pnorm((Stim-t_mu)/t_sigma)) %>% 
+    mutate(t_sigma = t_sigma, t_mu_mu = t_mu_mu, t_mu_sigma = t_mu_sigma, U = U) %>% group_by(Stim) %>% mutate(spacing = t_mu - lag(t_mu)) %>% ungroup()
+  
+  outcome = Units %>% group_by(Stim) %>% summarise(Y = rpoisbinom(1, pp))
+  
+  data_stan = list(Y = outcome$Y,  U = U,  N = N, S = Stim)
+  
+  f = mod$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, 
+                           chains = 4, parallel_chains = 4, adapt_delta = 0.99)
+  
+  sum_dyn = f_dyn$summary()
+  sum_lex = f_lex$summary()
+  dia_dyn = f_dyn$sampler_diagnostics(format = "draws_df") %>% select(divergent__, treedepth__)
+  dia_lex = f_lex$sampler_diagnostics(format = "draws_df") %>% select(divergent__, treedepth__)
+  draws_dyn = f_dyn$draws(format = "draws_df") %>% select(-contains("pp")) %>% select(-contains("."))
+  draws_lex = f_lex$draws(format = "draws_df") %>% select(-contains("pp")) %>% select(-contains("."))
+  time_lex = f_lex$time()$total
+  time_dyn = f_dyn$time()$total
+  
+  return(list(sim_out = outcome, sim_units = Units,sum_dyn   = sum_dyn,sum_lex   = sum_lex, dia_dyn   = dia_dyn, dia_lex   = dia_lex,
+    draws_dyn = draws_dyn,draws_lex = draws_lex, time_lex  = time_lex, time_dyn  = time_dyn ))
+  
+  
+}
+
+plan(multisession, workers = 1)
+
+u_values = c(rep(3, 1), rep(7, 1))
+
+safe_fit <- purrr::possibly(fit_model,otherwise = NULL)
+
+qq <- future_map(u_values,~safe_fit(N=200, U =.x),.options = furrr_options(seed = TRUE),.progress = TRUE)
+
+#saveRDS(qq, file = here("fits", "fits_lex_dyn.rds"))
+
+```
+
+```{r}
+#Fit with exisiting data
+sim_data = readRDS(here("fits", "N3_N7.rds"))
+
+mod = cmdstan_model(here("models","Likelihood_test", "MU_dyn.stan"))
+
+fit_model = function(i, N){
+  
+  Units = sim_data[[i]][["sim_units"]]
+  
+  outcome = sim_data[[i]][["sim_out"]]
+  
+  data_stan = list(Y = outcome$Y,  U = unique(Units$U),  N = N, S = outcome$Stim)
+  
+  f = mod$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, 
+                           chains = 4, parallel_chains = 4, adapt_delta = 0.99)
+  
+  sum = f$summary()
+  dia = f$sampler_diagnostics(format = "draws_df") %>% select(divergent__, treedepth__)
+  draws = f$draws(format = "draws_df") %>% select(-contains("pp")) %>% select(-contains("."))
+  time = f$time()$total
+  
+  return(list(sim_out = outcome, sim_units = Units,sum   = sum, dia   = dia,
+    draws= draws, time = time ))
+  
+  
+}
+
+plan(multisession, workers = 1)
+
+i_vals = expand.grid(i = 101:200)
+
+safe_fit <- purrr::possibly(fit_model,otherwise = NULL)
+
+qq <- future_map(i_vals,~safe_fit(N=200, i =.x),.options = furrr_options(seed = TRUE),.progress = TRUE)
+```
+
+```{r}
+# run diff param
+
+mod_nonC = cmdstan_model(here("models", "Likelihood_test", "MU_ord_hier.stan"))
+mod_C = cmdstan_model(here("models", "Likelihood_test", "MU_ord_hier_cent.stan"))
+
+fit_model = function(N, U, t_sigma){
+  
+  Stim = seq(0, 20, length.out = N)
+  
+  t_mu_mu = rnorm(1, 10,0.5)
+  t_mu_sigma = exp(rnorm(1, 0,1))
+  
+  t_sigma_mu_log = rnorm(1,0,0.5)
+  t_sigma_sigma = exp(rnorm(1, -0.5, 0.2))
+
+  t_sigma = t_sigma 
+  
+  t_mu = sort(rnorm(U, t_mu_mu, t_mu_sigma))
+  
+  Units =  expand.grid(unit = seq_len(U),Stim = Stim) %>%mutate(t_mu = t_mu[unit]) %>% mutate(pp = pnorm((Stim-t_mu)/t_sigma)) %>% 
+    mutate(t_sigma = t_sigma, t_mu_mu = t_mu_mu, t_mu_sigma = t_mu_sigma, U = U) %>% group_by(Stim) %>% mutate(spacing = t_mu - lag(t_mu)) %>% ungroup()
+  
+  outcome = Units %>% group_by(Stim) %>% summarise(Y = rpoisbinom(1, pp))
+  
+  data_stan = list(Y = outcome$Y,  U = U,  N = N, S = Stim)
+  
+  f_nonC = mod_nonC$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, 
+                           chains = 4, parallel_chains = 4, adapt_delta = 0.99)
+  
+  f_C = mod_C$sample(data = data_stan, iter_warmup = 1000, iter_sampling = 1000, 
+                           chains = 4, parallel_chains = 4, adapt_delta = 0.99)
+  
+  sum_nonC = f_nonC$summary()
+  sum_C = f_C$summary()
+  dia_nonC = f_nonC$sampler_diagnostics(format = "draws_df") %>% select(divergent__, treedepth__)
+  dia_C = f_C$sampler_diagnostics(format = "draws_df") %>% select(divergent__, treedepth__)
+  draws_nonC = f_nonC$draws(format = "draws_df") %>% select(-contains("pp")) %>% select(-contains("."))
+  draws_C = f_C$draws(format = "draws_df") %>% select(-contains("pp")) %>% select(-contains("."))
+  time_C = f_C$time()$total
+  time_nonC = f_nonC$time()$total
+  
+return(list(
+    sim_out   = outcome, 
+    sim_units = Units,
+    sum_C     = sum_C,     
+    sum_nonC  = sum_nonC,  
+    dia_C     = dia_C,     
+    dia_nonC  = dia_nonC,  
+    draws_C   = draws_C,   
+    draws_nonC= draws_nonC,
+    time_C    = time_C,    
+    time_nonC = time_nonC
+  ))
+}
+
+
+plan(multisession, workers = 1)
+
+t_sigma_vals = c(rep(1,1), rep(3,1))
+
+safe_fit <- purrr::possibly(fit_model,otherwise = NULL)
+
+qq <- future_map(t_sigma_vals,~safe_fit(N=200, U=3, t_sigma =.x),.options = furrr_options(seed = TRUE),.progress = TRUE)
+
+```
